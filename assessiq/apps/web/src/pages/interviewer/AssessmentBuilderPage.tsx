@@ -1,16 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  Search,
-  Check,
-  Link2,
-  Copy,
-  Timer,
-  ShieldCheck,
-  ClipboardList,
-  Sparkles,
-} from 'lucide-react';
-import type { QuestionListItem } from '@assessiq/types';
+import { useNavigate } from 'react-router-dom';
+import { Search, Check, ArrowRight, Timer, ShieldCheck, ClipboardList, Sparkles } from 'lucide-react';
+import type { CreateAssessmentRequest, QuestionListItem } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
+import { assessmentsApi } from '../../api/assessments.api';
+import { ApiRequestError } from '../../api/client';
 import {
   Badge,
   Button,
@@ -61,14 +55,8 @@ function Toggle({
   );
 }
 
-function randomToken(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let t = '';
-  for (let i = 0; i < 10; i++) t += chars[Math.floor(Math.random() * chars.length)];
-  return t;
-}
-
 export default function AssessmentBuilderPage() {
+  const navigate = useNavigate();
   const [questions, setQuestions] = useState<QuestionListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -85,8 +73,8 @@ export default function AssessmentBuilderPage() {
   const [flagThreshold, setFlagThreshold] = useState(3);
   const [confidenceRating, setConfidenceRating] = useState(true);
 
-  const [link, setLink] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -100,7 +88,7 @@ export default function AssessmentBuilderPage() {
   }, [search]);
 
   const proctoringOn = trackTabs || trackFocus || detectPaste || detectIdle;
-  const canGenerate = title.trim().length > 0 && selected.size > 0;
+  const canSave = title.trim().length > 0 && selected.size > 0 && !saving;
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -109,20 +97,35 @@ export default function AssessmentBuilderPage() {
       else next.add(id);
       return next;
     });
-    setLink(null);
+    setError(null);
   };
 
-  const generate = () => {
-    if (!canGenerate) return;
-    setLink(`https://assessiq.app/a/${randomToken()}`);
-    setCopied(false);
-  };
-
-  const copyLink = async () => {
-    if (!link) return;
-    await navigator.clipboard.writeText(link);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    // Set preserves click order → question_ids are ordered as selected.
+    const body: CreateAssessmentRequest = {
+      title: title.trim(),
+      question_ids: Array.from(selected),
+      timer_enabled: timerOn,
+      ...(timerOn ? { timer_seconds: minutes * 60 } : {}),
+      proctoring_config: {
+        track_tab_switches: trackTabs,
+        track_focus_loss: trackFocus,
+        detect_paste: detectPaste,
+        detect_idle: detectIdle,
+        tab_switch_flag_threshold: flagThreshold,
+      },
+      confidence_rating_enabled: confidenceRating,
+    };
+    try {
+      const created = await assessmentsApi.create(body);
+      navigate(`/assessments/${created.id}`);
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not create assessment');
+      setSaving(false);
+    }
   };
 
   const summary = useMemo(() => {
@@ -139,9 +142,12 @@ export default function AssessmentBuilderPage() {
         subtitle="Pick questions, tune proctoring, and generate a shareable candidate link."
         actions={
           <>
-            <Button variant="secondary">Save draft</Button>
-            <Button onClick={generate} disabled={!canGenerate}>
-              <Link2 size={16} /> Generate link
+            <Button variant="secondary" onClick={() => navigate('/dashboard')}>
+              Cancel
+            </Button>
+            <Button onClick={save} disabled={!canSave}>
+              {saving ? <Spinner className="border-white/40 border-t-white" /> : <ArrowRight size={16} />}
+              {saving ? 'Creating…' : 'Create assessment'}
             </Button>
           </>
         }
@@ -158,7 +164,7 @@ export default function AssessmentBuilderPage() {
                   value={title}
                   onChange={(e) => {
                     setTitle(e.target.value);
-                    setLink(null);
+                    setError(null);
                   }}
                   className="text-[15px] font-medium"
                 />
@@ -314,41 +320,28 @@ export default function AssessmentBuilderPage() {
             </CardBody>
           </Card>
 
-          {/* Summary + link */}
+          {/* Summary + create */}
           <Card className="bg-brand-soft border-brand-100">
             <CardBody className="space-y-3">
               <p className="text-sm font-semibold text-slate-800">Summary</p>
               <p className="text-sm text-slate-600 tabular">{summary}</p>
-              <Button onClick={generate} disabled={!canGenerate} className="w-full">
-                <Link2 size={16} /> Generate link
+              <Button onClick={save} disabled={!canSave} className="w-full">
+                {saving ? <Spinner className="border-white/40 border-t-white" /> : <ArrowRight size={16} />}
+                {saving ? 'Creating…' : 'Create assessment'}
               </Button>
-              {!canGenerate && (
+              {!canSave && !saving && (
                 <p className="text-xs text-slate-400">
-                  Add a title and at least one question to generate a link.
+                  Add a title and at least one question to continue.
                 </p>
               )}
-
-              {link && (
-                <div className="animate-fade-in rounded-lg border border-brand-200 bg-white p-3 shadow-card">
-                  <p className="text-xs font-semibold text-slate-500 mb-1.5">Candidate link</p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 min-w-0 truncate rounded-md bg-slate-50 px-2.5 py-1.5 font-mono text-xs text-slate-700">
-                      {link}
-                    </code>
-                    <Button size="sm" variant="secondary" onClick={copyLink}>
-                      {copied ? (
-                        <>
-                          <Check size={14} /> Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={14} /> Copy
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                </div>
+              {error && (
+                <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
+                  {error}
+                </p>
               )}
+              <p className="text-xs text-slate-400">
+                You'll add a shareable candidate link on the next screen.
+              </p>
             </CardBody>
           </Card>
         </div>
