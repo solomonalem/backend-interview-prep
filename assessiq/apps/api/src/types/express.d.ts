@@ -5,6 +5,7 @@ declare global {
   namespace Express {
     interface Request {
       interviewer?: { id: string; email: string };
+      candidate?: { sessionId: string };
     }
   }
 }
