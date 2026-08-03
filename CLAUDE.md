@@ -100,10 +100,14 @@ Per `docs/10-mvp-scope.md` build order.
 - [x] Dev interviewer seeded for local login: **`dev@assessiq.local` / `password123`**
 - [x] Verified end-to-end through the Vite proxy (login → cookie → questions)
 
-Both apps type-check clean (`tsc --noEmit`). **Core-loop Step 1 done:** assessments + links
-backend (`POST/GET /assessments`, `GET /assessments/:id`, `POST /assessments/:id/links`) with
-the Builder, Detail, and Dashboard screens wired to it (real create → link → live statuses).
-**Not yet built (backend):** candidate sessions, proctoring, scoring worker, reports (Steps 2–4).
+Both apps type-check clean (`tsc --noEmit`). **Core-loop Steps 1–2 done:**
+- **Step 1** — assessments + links backend, with Builder/Detail/Dashboard wired (real create → link → live statuses).
+- **Step 2** — candidate session backend (`GET /sessions/link/:token`, `POST /sessions/start`,
+  `authCandidate`, `GET /sessions/:id/question/:position`, `POST .../answers|events|submit`) with the
+  candidate screens wired: validate link → timed one-at-a-time session → passive proctoring events →
+  submit. Link status now flips to `submitted` for real. Answers/events persist; **scoring not run yet**.
+
+**Not yet built (backend):** BullMQ + Claude scoring worker, report compile, email (Steps 3–4).
 
 **Frontend UI redesign (done, ahead of backend):** Modern-SaaS indigo design system
 (`components/ui/*` primitives, `components/layout/AppShell` with a Hire⇄Prepare mode
@@ -193,26 +197,26 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ---
 
-## Next steps — Core loop Step 2: candidate session backend
+## Next steps — Core loop Step 3: AI scoring worker
 
-From `docs/10-mvp-scope.md` (Week 4). Reference `docs/08-api-routes.md` for exact shapes.
+From `docs/10-mvp-scope.md` (Week 5) + `docs/04-scoring-engine.md` for the rubric prompt/shape.
 
-1. **`GET /sessions/link/:token`** (public) — validate a link, return assessment meta for the
-   candidate landing page.
-2. **`POST /sessions/start`** (public) — create a Session from a link token, issue a short-lived
-   candidate session JWT; mark the link opened.
-3. **`authCandidate` middleware** — verify the session JWT (Authorization: Bearer).
-4. **`GET /sessions/:id/question/:position`**, **`POST /sessions/:id/answers`**,
-   **`POST /sessions/:id/events`** (proctoring), **`POST /sessions/:id/submit`**.
-5. **Wire the candidate screens** (LinkLanding, Session, Submitted) to these — replacing the
-   inline mock deck. Then link statuses (`opened`/`in_progress`/`submitted`) start reflecting reality.
+1. **⚠️ Fix the model id first** — the spec's `claude-sonnet-4-6` is not a real id. Use a current
+   one (e.g. `claude-sonnet-5`); verify against the `claude-api` skill before wiring.
+2. **BullMQ scoring queue + worker** (`lib/redis.ts`, `queues/scoring.queue.ts`,
+   `workers/scoring.worker.ts`). Redis is already running via docker-compose.
+3. **Scoring service** (`services/scoring.service.ts`) — build the rubric prompt from the question's
+   `_guide` fields + the answer, call Claude at `temperature: 0`, parse JSON, write a `Score` row
+   (4 components + reasoning + hit/miss + probe), compute weighted `total_pct` and `ConfidenceFlag`.
+4. **Enqueue on submit** — in `submitSession` (session.service.ts) enqueue a job per answer
+   (there's a `TODO (Step 3)` marker there).
+5. **Report compile** (Step 4) once all answers scored → `Report` row + verdict; then wire the real
+   `GET /reports/session/:id` and swap the mock `ReportPage`, plus email (Resend).
 
-Then Step 3 (BullMQ + Claude scoring worker — **fix the fake `claude-sonnet-4-6` model id**) and
-Step 4 (report compile + email).
-
-**Reusable pieces in place:** `AppError`/`asyncHandler`, `authInterviewer` (mirror for
-`authCandidate`), `generateToken` util, the zod-validate-then-service route shape, the
-`deriveLinkStatus` helper (already maps session status), and the frontend `api` client + `useAuth`.
+**Reusable pieces in place:** `AppError`/`asyncHandler`, `authInterviewer`/`authCandidate`,
+`generateToken`, the zod-validate-then-service route shape, `deriveLinkStatus`, `prisma` singleton,
+the frontend `api` client (+`bearer`) / `useAuth` / candidate store. Anthropic SDK + BullMQ + ioredis
+are already in `apps/api` deps.
 
 **Phase 0 is "done" when** an interviewer can build a 5-question assessment, a candidate
 takes it via link, Claude scores it in the background, and the interviewer gets an
