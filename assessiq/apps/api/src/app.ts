@@ -3,6 +3,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { authRouter } from './routes/auth.js';
 import { questionsRouter } from './routes/questions.js';
+import { assessmentsRouter } from './routes/assessments.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
 
 // Express app factory (exported for testing). Resource routers mount under /api/v1.
@@ -21,6 +22,7 @@ export function createApp(): Express {
   const api = express.Router();
   api.use('/auth', authRouter);
   api.use('/questions', questionsRouter);
+  api.use('/assessments', assessmentsRouter);
   app.use('/api/v1', api);
 
   app.use(notFoundHandler);
