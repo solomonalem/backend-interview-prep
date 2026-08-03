@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ListChecks,
@@ -6,66 +6,134 @@ import {
   FileText,
   ShieldAlert,
   ArrowRight,
+  TriangleAlert,
   type LucideIcon,
 } from 'lucide-react';
-import { Button, Card, CardBody } from '../../components/ui';
+import type { LinkValidateResponse } from '@assessiq/types';
+import { Button, Card, CardBody, Spinner } from '../../components/ui';
 import { cn } from '../../lib/cn';
+import { sessionsApi } from '../../api/sessions.api';
+import { ApiRequestError } from '../../api/client';
+import { useCandidateSession } from '../../store/candidateSession';
 
-// Static mock metadata for the assessment behind this link (public page — no API).
-const ASSESSMENT = {
-  title: 'Senior Backend Engineer — Assessment',
-  company: 'Acme Health',
-  questions: 5,
-  timeLimit: '45 minutes',
-  format: 'One question at a time',
-};
-
-const EXPECTATIONS = [
-  'You answer one question at a time — the next is revealed after you submit.',
-  'There is no going back to a question once you submit it.',
-  'A countdown timer runs for the whole session; it starts when you begin.',
-  "You'll rate how confident you are in each of your answers.",
-];
+type Meta = LinkValidateResponse['assessment'];
 
 export default function LinkLandingPage() {
   const { token } = useParams();
   const navigate = useNavigate();
-  const [ready, setReady] = useState(false);
+  const startSession = useCandidateSession((s) => s.start);
 
-  const start = () => {
-    if (!ready) return;
-    navigate(`/a/${token}/session`);
+  const [meta, setMeta] = useState<Meta | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [ready, setReady] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    sessionsApi
+      .validateLink(token)
+      .then((r) => setMeta(r.assessment))
+      .catch((err) => {
+        if (err instanceof ApiRequestError && err.code === 'LINK_USED') {
+          setLoadError('This link has already been used. Each link works once.');
+        } else {
+          setLoadError('This link is invalid or has expired. Ask your interviewer for a new one.');
+        }
+      })
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  const begin = async () => {
+    if (!ready || !token) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      const res = await sessionsApi.start(token);
+      startSession({
+        linkToken: token,
+        sessionId: res.session_id,
+        sessionToken: res.session_token,
+        expiresAt: res.expires_at,
+        total: meta?.question_count ?? 1,
+        confidenceEnabled: meta?.confidence_rating_enabled ?? false,
+        firstQuestion: res.first_question,
+      });
+      navigate(`/a/${token}/session`);
+    } catch (err) {
+      setStartError(
+        err instanceof ApiRequestError ? err.message : 'Could not start the assessment.',
+      );
+      setStarting(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Spinner className="h-6 w-6" />
+      </div>
+    );
+  }
+
+  if (loadError || !meta) {
+    return (
+      <div className="flex-1 flex items-center justify-center px-6 py-10">
+        <Card className="w-full max-w-md">
+          <CardBody className="p-8 text-center">
+            <span className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-rose-50 text-rose-500 mb-4">
+              <TriangleAlert size={24} />
+            </span>
+            <h1 className="text-lg font-bold text-slate-800">Link unavailable</h1>
+            <p className="mt-2 text-sm text-slate-500">{loadError}</p>
+          </CardBody>
+        </Card>
+      </div>
+    );
+  }
+
+  const timeLimit = meta.timer_seconds
+    ? `${Math.round(meta.timer_seconds / 60)} minutes`
+    : 'No time limit';
 
   return (
     <div className="flex-1 flex items-center justify-center px-6 py-10">
       <div className="w-full max-w-2xl">
         <Card className="overflow-hidden">
-          {/* Header */}
           <div className="bg-brand-gradient px-8 py-8 text-white relative overflow-hidden">
             <div className="absolute -top-16 -right-16 h-52 w-52 rounded-full bg-white/10 blur-3xl" />
-            <p className="relative text-xs font-semibold uppercase tracking-wide text-white/70">
-              {ASSESSMENT.company}
-            </p>
-            <h1 className="relative mt-1.5 text-2xl font-bold leading-tight">{ASSESSMENT.title}</h1>
+            {meta.company_name && (
+              <p className="relative text-xs font-semibold uppercase tracking-wide text-white/70">
+                {meta.company_name}
+              </p>
+            )}
+            <h1 className="relative mt-1.5 text-2xl font-bold leading-tight">{meta.title}</h1>
             <p className="relative mt-2 text-sm text-white/80 max-w-md">
               Welcome. Take a moment to read the details below, then begin whenever you're ready.
             </p>
           </div>
 
           <CardBody className="p-8 space-y-8">
-            {/* Meta row */}
             <div className="grid grid-cols-3 gap-3">
-              <Stat icon={ListChecks} value={`${ASSESSMENT.questions} questions`} label="Total" />
-              <Stat icon={Clock} value={ASSESSMENT.timeLimit} label="Time limit" />
-              <Stat icon={FileText} value={ASSESSMENT.format} label="Format" />
+              <Stat icon={ListChecks} value={`${meta.question_count} questions`} label="Total" />
+              <Stat icon={Clock} value={timeLimit} label="Time limit" />
+              <Stat icon={FileText} value="One at a time" label="Format" />
             </div>
 
-            {/* What to expect */}
             <div>
               <h2 className="text-sm font-semibold text-slate-800">What to expect</h2>
               <ul className="mt-3 space-y-2.5">
-                {EXPECTATIONS.map((item) => (
+                {[
+                  'You answer one question at a time — the next is revealed after you submit.',
+                  'There is no going back to a question once you submit it.',
+                  meta.timer_seconds
+                    ? 'A countdown timer runs for the whole session; it started when the link was issued.'
+                    : 'There is no time limit — take the time you need.',
+                  meta.confidence_rating_enabled
+                    ? "You'll rate how confident you are in each of your answers."
+                    : 'Answer each question as completely as you can.',
+                ].map((item) => (
                   <li key={item} className="flex items-start gap-2.5 text-sm text-slate-600">
                     <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-brand-500 shrink-0" />
                     {item}
@@ -74,22 +142,22 @@ export default function LinkLandingPage() {
               </ul>
             </div>
 
-            {/* Proctoring disclosure */}
-            <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3.5">
-              <span className="h-9 w-9 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
-                <ShieldAlert size={18} />
-              </span>
-              <div>
-                <p className="text-sm font-semibold text-amber-800">Session monitoring</p>
-                <p className="mt-1 text-xs leading-relaxed text-amber-700">
-                  This session passively logs tab switches, focus loss, paste events, and idle time.
-                  This is shared with the interviewer as context — it is never used for automatic
-                  disqualification.
-                </p>
+            {meta.proctoring_enabled && (
+              <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3.5">
+                <span className="h-9 w-9 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
+                  <ShieldAlert size={18} />
+                </span>
+                <div>
+                  <p className="text-sm font-semibold text-amber-800">Session monitoring</p>
+                  <p className="mt-1 text-xs leading-relaxed text-amber-700">
+                    This session passively logs tab switches, focus loss, paste events, and idle
+                    time. This is shared with the interviewer as context — it is never used for
+                    automatic disqualification.
+                  </p>
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Consent + start */}
             <div className="border-t border-slate-100 pt-6 space-y-5">
               <label className="flex items-start gap-3 cursor-pointer select-none">
                 <input
@@ -101,8 +169,16 @@ export default function LinkLandingPage() {
                 <span className="text-sm text-slate-700">I understand and I'm ready to begin.</span>
               </label>
 
-              <Button size="lg" onClick={start} disabled={!ready} className="w-full">
-                Start assessment <ArrowRight size={18} />
+              {startError && (
+                <p className="text-sm text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
+                  {startError}
+                </p>
+              )}
+
+              <Button size="lg" onClick={begin} disabled={!ready || starting} className="w-full">
+                {starting ? <Spinner className="border-white/40 border-t-white" /> : null}
+                {starting ? 'Starting…' : 'Start assessment'}
+                {!starting && <ArrowRight size={18} />}
               </Button>
             </div>
           </CardBody>

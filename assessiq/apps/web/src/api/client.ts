@@ -30,8 +30,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+type Headers = Record<string, string>;
+
 export const api = {
-  get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, data?: unknown) =>
-    request<T>(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
+  get: <T>(path: string, headers?: Headers) => request<T>(path, { headers }),
+  post: <T>(path: string, data?: unknown, headers?: Headers) =>
+    request<T>(path, {
+      method: 'POST',
+      body: data !== undefined ? JSON.stringify(data) : undefined,
+      headers,
+    }),
 };
+
+// Authorization header for candidate session calls (Bearer token, not cookie).
+export const bearer = (token: string): Headers => ({ Authorization: `Bearer ${token}` });
