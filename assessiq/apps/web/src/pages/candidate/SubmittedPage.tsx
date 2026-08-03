@@ -1,6 +1,11 @@
+import { useEffect } from 'react';
 import { Check } from 'lucide-react';
+import { useCandidateSession } from '../../store/candidateSession';
 
 export default function SubmittedPage() {
+  const clear = useCandidateSession((s) => s.clear);
+  useEffect(() => clear(), [clear]);
+
   return (
     <div className="flex-1 flex items-center justify-center px-6 py-10">
       <div className="w-full max-w-md text-center animate-fade-in">

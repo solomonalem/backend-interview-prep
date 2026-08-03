@@ -100,10 +100,17 @@ Per `docs/10-mvp-scope.md` build order.
 - [x] Dev interviewer seeded for local login: **`dev@assessiq.local` / `password123`**
 - [x] Verified end-to-end through the Vite proxy (login → cookie → questions)
 
-Both apps type-check clean (`tsc --noEmit`). **Core-loop Step 1 done:** assessments + links
-backend (`POST/GET /assessments`, `GET /assessments/:id`, `POST /assessments/:id/links`) with
-the Builder, Detail, and Dashboard screens wired to it (real create → link → live statuses).
-**Not yet built (backend):** candidate sessions, proctoring, scoring worker, reports (Steps 2–4).
+Both apps type-check clean (`tsc --noEmit`). **Core-loop Steps 1–2 done:**
+- **Step 1** — assessments + links backend, with Builder/Detail/Dashboard wired (real create → link → live statuses).
+- **Step 2** — candidate session backend + wired screens: validate link → timed one-at-a-time
+  session → passive proctoring events → submit. Link status flips to `submitted`.
+- **Step 3** — AI scoring: BullMQ + Redis scoring queue/worker (`workers/`, run via
+  `npm run dev:worker`), `scoring.service` (Claude `claude-sonnet-4-6` @ temp 0, with a dev stub
+  when no API key), `report.service` (compiles overall %, verdict, proctoring counts on completion).
+  Enqueued per answer on submit. Real Score + Report rows now exist; link `overall_score` populates.
+
+**Not yet built (backend):** the real report API + wiring the mock ReportPage to it, PDF (Puppeteer),
+and email (Resend) — Step 4.
 
 **Frontend UI redesign (done, ahead of backend):** Modern-SaaS indigo design system
 (`components/ui/*` primitives, `components/layout/AppShell` with a Hire⇄Prepare mode
@@ -179,10 +186,13 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 - **`apps/web/package.json` needs `"type": "module"`** — without it, `postcss.config.js`
   (ESM `export default`) fails to load with "Unexpected token 'export'". Already fixed;
   keep it.
-- **⚠️ Model id caveat:** the spec pins the scorer to `claude-sonnet-4-6`, which is
-  **not a real Anthropic model id**. It's only a comment string in the schema right now
-  (nothing calls Claude yet). When building the scoring worker, use a real current id
-  (check the `claude-api` skill / latest docs — current Sonnet is `claude-sonnet-5`).
+- **Scoring model:** the scorer uses `claude-sonnet-4-6` (a real, active model — an
+  earlier note in this repo wrongly called it fake). It's chosen because the spec wants
+  `temperature: 0` for deterministic scoring, and temperature is only accepted on Sonnet 4.6
+  and earlier (Sonnet 5 / Opus 4.7+ reject it — they use adaptive thinking + effort). Override
+  with `SCORING_MODEL`. If moving to a newer model, drop `temperature`. **No `ANTHROPIC_API_KEY`
+  locally** → the worker uses a deterministic dev stub (`model_used: 'stub-dev'`); set a real key
+  to score for real. Verify model ids against the `claude-api` skill.
 - **Prisma quirks:** `BehaviorEvent.timestamp` is `BigInt` — convert with `Number(...)`
   before sending to the frontend. `Score.total_pct` is stored, not computed at query time.
 - **Candidates are NOT Users.** They have no account row; they exist only as
@@ -193,26 +203,27 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ---
 
-## Next steps — Core loop Step 2: candidate session backend
+## Next steps — Core loop Step 4: real report + notifications
 
-From `docs/10-mvp-scope.md` (Week 4). Reference `docs/08-api-routes.md` for exact shapes.
+Scores + reports now exist in the DB. Step 4 exposes them and closes the loop.
 
-1. **`GET /sessions/link/:token`** (public) — validate a link, return assessment meta for the
-   candidate landing page.
-2. **`POST /sessions/start`** (public) — create a Session from a link token, issue a short-lived
-   candidate session JWT; mark the link opened.
-3. **`authCandidate` middleware** — verify the session JWT (Authorization: Bearer).
-4. **`GET /sessions/:id/question/:position`**, **`POST /sessions/:id/answers`**,
-   **`POST /sessions/:id/events`** (proctoring), **`POST /sessions/:id/submit`**.
-5. **Wire the candidate screens** (LinkLanding, Session, Submitted) to these — replacing the
-   inline mock deck. Then link statuses (`opened`/`in_progress`/`submitted`) start reflecting reality.
+1. **`GET /reports/session/:id`** (authInterviewer, must own the assessment) — compile the full
+   report response from `docs/08` (session, overall + component avgs, proctoring counts + timeline
+   from `behavior_events`, per-question score breakdown with hit/miss + probe + confidence flag).
+   Return `202 { status: 'scoring_in_progress', ... }` if the Report row doesn't exist yet.
+2. **Wire the mock `ReportPage`** (`apps/web/.../interviewer/ReportPage.tsx`) to it, and point the
+   Detail/Dashboard "View report" links at the real session id (they already link to `/reports/:id`).
+3. **Email on report ready** (Resend) — send the interviewer a link when `compileReport` finishes
+   (there's a `TODO (Step 4)` marker in `report.service.ts`).
+4. **PDF** (Puppeteer → R2) — deferred/optional; the `pdf_url`/`pdf_status` columns already exist.
 
-Then Step 3 (BullMQ + Claude scoring worker — **fix the fake `claude-sonnet-4-6` model id**) and
-Step 4 (report compile + email).
+To score for real (not the stub), set `ANTHROPIC_API_KEY` in `apps/api/.env` and run the worker
+(`npm run dev:worker`).
 
-**Reusable pieces in place:** `AppError`/`asyncHandler`, `authInterviewer` (mirror for
-`authCandidate`), `generateToken` util, the zod-validate-then-service route shape, the
-`deriveLinkStatus` helper (already maps session status), and the frontend `api` client + `useAuth`.
+**Reusable pieces in place:** `AppError`/`asyncHandler`, `authInterviewer`/`authCandidate`,
+`generateToken`, the zod-validate-then-service route shape, `deriveLinkStatus`/`linkOverallScore`,
+`prisma` singleton, score-calc utils, the scoring queue/worker, the frontend `api` client (+`bearer`)
+/ `useAuth` / candidate store, and the already-built mock `ReportPage` to wire up.
 
 **Phase 0 is "done" when** an interviewer can build a 5-question assessment, a candidate
 takes it via link, Claude scores it in the background, and the interviewer gets an

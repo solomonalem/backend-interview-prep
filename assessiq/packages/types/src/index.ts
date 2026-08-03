@@ -3,3 +3,4 @@ export * from './api.js';
 export * from './user.js';
 export * from './question.js';
 export * from './assessment.js';
+export * from './session.js';

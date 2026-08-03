@@ -20,6 +20,23 @@ export function verifyInterviewerToken(token: string): InterviewerClaims {
   return decoded;
 }
 
+// ── Candidate session token (short-lived, sent as Authorization: Bearer) ──────
+export interface CandidateClaims {
+  sub: string; // session id
+  role: 'candidate';
+}
+
+export function signCandidateToken(sessionId: string): string {
+  const claims: CandidateClaims = { sub: sessionId, role: 'candidate' };
+  return jwt.sign(claims, SECRET, { expiresIn: '4h' });
+}
+
+export function verifyCandidateToken(token: string): CandidateClaims {
+  const decoded = jwt.verify(token, SECRET) as CandidateClaims;
+  if (decoded.role !== 'candidate') throw new Error('wrong token role');
+  return decoded;
+}
+
 // Cookie options: httpOnly (JS can't read it), secure in prod, 7-day life.
 export function authCookieOptions() {
   return {
