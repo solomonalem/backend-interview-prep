@@ -100,8 +100,10 @@ Per `docs/10-mvp-scope.md` build order.
 - [x] Dev interviewer seeded for local login: **`dev@assessiq.local` / `password123`**
 - [x] Verified end-to-end through the Vite proxy (login → cookie → questions)
 
-Both apps type-check clean (`tsc --noEmit`). **Not yet built (backend):** assessments, links,
-candidate sessions, proctoring, scoring worker, reports. Next backend work is Week 3.
+Both apps type-check clean (`tsc --noEmit`). **Core-loop Step 1 done:** assessments + links
+backend (`POST/GET /assessments`, `GET /assessments/:id`, `POST /assessments/:id/links`) with
+the Builder, Detail, and Dashboard screens wired to it (real create → link → live statuses).
+**Not yet built (backend):** candidate sessions, proctoring, scoring worker, reports (Steps 2–4).
 
 **Frontend UI redesign (done, ahead of backend):** Modern-SaaS indigo design system
 (`components/ui/*` primitives, `components/layout/AppShell` with a Hire⇄Prepare mode
@@ -191,24 +193,26 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ---
 
-## Next steps — Phase 0, Week 3 (do these next, in order)
+## Next steps — Core loop Step 2: candidate session backend
 
-From `docs/10-mvp-scope.md`. Reference `docs/08-api-routes.md` for exact request/response shapes.
+From `docs/10-mvp-scope.md` (Week 4). Reference `docs/08-api-routes.md` for exact shapes.
 
-1. **`POST /assessments`** — create an assessment (title, ordered `question_ids`, timer,
-   proctoring_config, confidence toggle). `services/assessment.service.ts` + `routes/assessments.ts`.
-2. **`POST /assessments/:id/links`** — generate a shareable link (random 10-char token,
-   `expires_in_hours` default 168). Token util in `utils/token.ts`.
-3. **`GET /assessments`** — list assessments for the logged-in interviewer with link statuses.
-4. **Frontend**: Assessment builder UI (pick questions from the bank, timer config,
-   proctoring toggles) + link generation/copy UI + interviewer dashboard list.
+1. **`GET /sessions/link/:token`** (public) — validate a link, return assessment meta for the
+   candidate landing page.
+2. **`POST /sessions/start`** (public) — create a Session from a link token, issue a short-lived
+   candidate session JWT; mark the link opened.
+3. **`authCandidate` middleware** — verify the session JWT (Authorization: Bearer).
+4. **`GET /sessions/:id/question/:position`**, **`POST /sessions/:id/answers`**,
+   **`POST /sessions/:id/events`** (proctoring), **`POST /sessions/:id/submit`**.
+5. **Wire the candidate screens** (LinkLanding, Session, Submitted) to these — replacing the
+   inline mock deck. Then link statuses (`opened`/`in_progress`/`submitted`) start reflecting reality.
 
-After Week 3, continue the Week 4–6 sequence in `docs/10-mvp-scope.md` (candidate session
-→ proctoring → BullMQ scoring worker → report → email).
+Then Step 3 (BullMQ + Claude scoring worker — **fix the fake `claude-sonnet-4-6` model id**) and
+Step 4 (report compile + email).
 
-**Reusable pieces already in place for Week 3:** `AppError`/`asyncHandler` error pattern,
-`authInterviewer` middleware, the `PUBLIC_SELECT` pattern for stripping private fields,
-the zod-validate-then-call-service route shape, and the frontend `api` client + `useAuth`.
+**Reusable pieces in place:** `AppError`/`asyncHandler`, `authInterviewer` (mirror for
+`authCandidate`), `generateToken` util, the zod-validate-then-service route shape, the
+`deriveLinkStatus` helper (already maps session status), and the frontend `api` client + `useAuth`.
 
 **Phase 0 is "done" when** an interviewer can build a 5-question assessment, a candidate
 takes it via link, Claude scores it in the background, and the interviewer gets an
