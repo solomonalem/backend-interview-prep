@@ -4,6 +4,7 @@ import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import {
   createAssessment,
+  createLink,
   getAssessmentDetail,
   listAssessments,
 } from '../services/assessment.service.js';
@@ -58,5 +59,26 @@ assessmentsRouter.get(
     const { id } = req.params;
     if (!id) throw new AppError(400, 'VALIDATION', 'assessment id is required');
     res.json(await getAssessmentDetail(req.interviewer!.id, id));
+  }),
+);
+
+const createLinkSchema = z.object({
+  candidate_label: z.string().min(1).optional(),
+  expires_in_hours: z.number().int().positive().optional(),
+});
+
+// POST /assessments/:id/links — generate a shareable candidate link
+assessmentsRouter.post(
+  '/:id/links',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'assessment id is required');
+    const parsed = createLinkSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION', parsed.error.issues[0]?.message ?? 'Invalid request');
+    }
+    const link = await createLink(req.interviewer!.id, id, parsed.data);
+    res.status(201).json(link);
   }),
 );

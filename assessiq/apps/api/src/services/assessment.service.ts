@@ -4,6 +4,8 @@ import type {
   AssessmentListResponse,
   CreateAssessmentRequest,
   CreateAssessmentResponse,
+  CreateLinkRequest,
+  CreateLinkResponse,
   Difficulty,
   LinkStatus,
   ProctoringConfig,
@@ -11,6 +13,9 @@ import type {
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
+import { generateToken } from '../utils/token.js';
+
+const DEFAULT_EXPIRES_HOURS = 168; // 7 days
 
 // A link's status is derived from its session (if started) and its expiry.
 type LinkWithSession = {
@@ -183,5 +188,47 @@ export async function getAssessmentDetail(
           : {}),
       };
     }),
+  };
+}
+
+// ── POST /assessments/:id/links ──────────────────────────────────────────────
+export async function createLink(
+  ownerId: string,
+  assessmentId: string,
+  input: CreateLinkRequest,
+): Promise<CreateLinkResponse> {
+  // Verify the interviewer owns this assessment before minting a link.
+  const assessment = await prisma.assessment.findFirst({
+    where: { id: assessmentId, owner_id: ownerId },
+    select: { id: true },
+  });
+  if (!assessment) throw new AppError(404, 'ASSESSMENT_NOT_FOUND', 'Assessment not found');
+
+  const hours = input.expires_in_hours ?? DEFAULT_EXPIRES_HOURS;
+  const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+
+  // Generate a unique token (retry on the astronomically-unlikely collision).
+  let token = generateToken();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const clash = await prisma.assessmentLink.findUnique({ where: { token }, select: { id: true } });
+    if (!clash) break;
+    token = generateToken();
+  }
+
+  const link = await prisma.assessmentLink.create({
+    data: {
+      token,
+      assessment_id: assessmentId,
+      candidate_label: input.candidate_label ?? null,
+      expires_at: expiresAt,
+    },
+  });
+
+  const baseUrl = process.env.CLIENT_URL ?? 'http://localhost:5173';
+  return {
+    id: link.id,
+    token: link.token,
+    url: `${baseUrl}/a/${link.token}`,
+    expires_at: link.expires_at.toISOString(),
   };
 }
