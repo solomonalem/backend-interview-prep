@@ -2,7 +2,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
-import { createAssessment, listAssessments } from '../services/assessment.service.js';
+import {
+  createAssessment,
+  getAssessmentDetail,
+  listAssessments,
+} from '../services/assessment.service.js';
 
 export const assessmentsRouter = Router();
 
@@ -43,5 +47,16 @@ assessmentsRouter.get(
   authInterviewer,
   asyncHandler(async (req, res) => {
     res.json(await listAssessments(req.interviewer!.id));
+  }),
+);
+
+// GET /assessments/:id — full detail (ownership enforced in the service)
+assessmentsRouter.get(
+  '/:id',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'assessment id is required');
+    res.json(await getAssessmentDetail(req.interviewer!.id, id));
   }),
 );

@@ -1,9 +1,13 @@
 import type { Prisma } from '@prisma/client';
 import type {
+  AssessmentDetail,
   AssessmentListResponse,
   CreateAssessmentRequest,
   CreateAssessmentResponse,
+  Difficulty,
   LinkStatus,
+  ProctoringConfig,
+  QuestionType,
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
@@ -116,5 +120,68 @@ export async function listAssessments(ownerId: string): Promise<AssessmentListRe
         overall_score: linkOverallScore(link),
       })),
     })),
+  };
+}
+
+// ── GET /assessments/:id (detail) ────────────────────────────────────────────
+export async function getAssessmentDetail(
+  ownerId: string,
+  assessmentId: string,
+): Promise<AssessmentDetail> {
+  const a = await prisma.assessment.findFirst({
+    where: { id: assessmentId, owner_id: ownerId }, // ownership enforced here
+    include: {
+      questions: {
+        orderBy: { position: 'asc' },
+        include: {
+          question: { select: { id: true, text: true, topic: true, difficulty: true, type: true } },
+        },
+      },
+      links: {
+        orderBy: { created_at: 'asc' },
+        include: { session: { include: { report: { select: { overall_pct: true } } } } },
+      },
+    },
+  });
+  if (!a) throw new AppError(404, 'ASSESSMENT_NOT_FOUND', 'Assessment not found');
+
+  return {
+    id: a.id,
+    title: a.title,
+    timer_enabled: a.timer_enabled,
+    timer_seconds: a.timer_seconds,
+    proctoring_config: a.proctoring_config as unknown as ProctoringConfig,
+    confidence_rating_enabled: a.confidence_rating_enabled,
+    questions: a.questions.map((aq) => ({
+      position: aq.position,
+      question: {
+        id: aq.question.id,
+        text: aq.question.text,
+        topic: aq.question.topic,
+        difficulty: aq.question.difficulty as Difficulty,
+        type: aq.question.type as QuestionType,
+      },
+    })),
+    links: a.links.map((link) => {
+      const status = deriveLinkStatus(link);
+      return {
+        id: link.id,
+        token: link.token,
+        candidate_label: link.candidate_label,
+        expires_at: link.expires_at.toISOString(),
+        status,
+        ...(link.session
+          ? {
+              session: {
+                id: link.session.id,
+                status: link.session.status,
+                started_at: link.session.started_at?.toISOString() ?? null,
+                submitted_at: link.session.submitted_at?.toISOString() ?? null,
+                overall_score: linkOverallScore(link),
+              },
+            }
+          : {}),
+      };
+    }),
   };
 }
