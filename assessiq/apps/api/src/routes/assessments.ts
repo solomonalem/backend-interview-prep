@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
-import { createAssessment } from '../services/assessment.service.js';
+import { createAssessment, listAssessments } from '../services/assessment.service.js';
 
 export const assessmentsRouter = Router();
 
@@ -34,5 +34,14 @@ assessmentsRouter.post(
     }
     const assessment = await createAssessment(req.interviewer!.id, parsed.data);
     res.status(201).json(assessment);
+  }),
+);
+
+// GET /assessments — list assessments owned by the interviewer
+assessmentsRouter.get(
+  '/',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    res.json(await listAssessments(req.interviewer!.id));
   }),
 );

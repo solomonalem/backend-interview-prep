@@ -1,7 +1,41 @@
 import type { Prisma } from '@prisma/client';
-import type { CreateAssessmentRequest, CreateAssessmentResponse } from '@assessiq/types';
+import type {
+  AssessmentListResponse,
+  CreateAssessmentRequest,
+  CreateAssessmentResponse,
+  LinkStatus,
+} from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
+
+// A link's status is derived from its session (if started) and its expiry.
+type LinkWithSession = {
+  opened_at: Date | null;
+  expires_at: Date;
+  session: { status: string; report: { overall_pct: number } | null } | null;
+};
+
+function deriveLinkStatus(link: LinkWithSession): LinkStatus {
+  if (link.session) {
+    switch (link.session.status) {
+      case 'in_progress':
+        return 'in_progress';
+      case 'submitted':
+        return 'submitted';
+      case 'expired':
+        return 'expired';
+      default:
+        return 'opened'; // session exists but not_started
+    }
+  }
+  if (link.expires_at.getTime() < Date.now()) return 'expired';
+  if (link.opened_at) return 'opened';
+  return 'not_opened';
+}
+
+function linkOverallScore(link: LinkWithSession): number | null {
+  return link.session?.report?.overall_pct ?? null;
+}
 
 // ── POST /assessments ────────────────────────────────────────────────────────
 export async function createAssessment(
@@ -49,5 +83,38 @@ export async function createAssessment(
     timer_seconds: assessment.timer_seconds,
     confidence_rating_enabled: assessment.confidence_rating_enabled,
     created_at: assessment.created_at.toISOString(),
+  };
+}
+
+// ── GET /assessments (list) ──────────────────────────────────────────────────
+export async function listAssessments(ownerId: string): Promise<AssessmentListResponse> {
+  const rows = await prisma.assessment.findMany({
+    where: { owner_id: ownerId },
+    orderBy: { created_at: 'desc' },
+    include: {
+      _count: { select: { questions: true } },
+      links: {
+        orderBy: { created_at: 'asc' },
+        include: { session: { include: { report: { select: { overall_pct: true } } } } },
+      },
+    },
+  });
+
+  return {
+    assessments: rows.map((a) => ({
+      id: a.id,
+      title: a.title,
+      question_count: a._count.questions,
+      timer_enabled: a.timer_enabled,
+      timer_seconds: a.timer_seconds,
+      created_at: a.created_at.toISOString(),
+      links: a.links.map((link) => ({
+        id: link.id,
+        token: link.token,
+        candidate_label: link.candidate_label,
+        status: deriveLinkStatus(link),
+        overall_score: linkOverallScore(link),
+      })),
+    })),
   };
 }
