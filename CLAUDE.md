@@ -100,8 +100,18 @@ Per `docs/10-mvp-scope.md` build order.
 - [x] Dev interviewer seeded for local login: **`dev@assessiq.local` / `password123`**
 - [x] Verified end-to-end through the Vite proxy (login → cookie → questions)
 
-Both apps type-check clean (`tsc --noEmit`). **Not yet built:** assessments, links,
-candidate sessions, proctoring, scoring worker, reports. Next is Week 3.
+Both apps type-check clean (`tsc --noEmit`). **Not yet built (backend):** assessments, links,
+candidate sessions, proctoring, scoring worker, reports. Next backend work is Week 3.
+
+**Frontend UI redesign (done, ahead of backend):** Modern-SaaS indigo design system
+(`components/ui/*` primitives, `components/layout/AppShell` with a Hire⇄Prepare mode
+switch, Inter + lucide-react). **All screens for all three modes are built** and routed:
+- Interviewer: Dashboard, Question Bank (real API), Assessment Builder, Assessment Detail, Report
+- Job seeker: Study Dashboard, Review Cards, Timed Practice, Story Bank, Target-a-Role
+- Candidate: Link Landing, Session (timer), Submitted
+Screens without a backend yet run on **mock data in `apps/web/src/data/mock.ts`** (shapes
+mirror docs/08) — swap for real endpoints as each backend lands. Auth + question bank use
+the real API. Full app builds clean (`npm run build --workspace=apps/web`).
 
 ---
 
