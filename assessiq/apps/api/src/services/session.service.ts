@@ -12,6 +12,7 @@ import type {
 import { prisma } from '../lib/prisma.js';
 import { signCandidateToken } from '../lib/jwt.js';
 import { AppError } from '../middleware/error.middleware.js';
+import { scoringQueue } from '../queues/scoring.queue.js';
 
 function proctoringEnabled(config: unknown): boolean {
   const pc = config as ProctoringConfig | null;
@@ -264,6 +265,18 @@ export async function submitSession(sessionId: string): Promise<SubmitSessionRes
       data: { status: 'submitted', submitted_at: new Date() },
     });
   }
-  // TODO (Step 3): enqueue BullMQ scoring jobs for all answers in this session.
+  await enqueueScoring(sessionId);
   return { ok: true, message: 'Your assessment has been submitted. Thank you.' };
+}
+
+// Enqueue a scoring job per answer (idempotent-ish: only queues unscored answers).
+async function enqueueScoring(sessionId: string): Promise<void> {
+  const answers = await prisma.answer.findMany({
+    where: { session_id: sessionId, scoring_status: 'pending' },
+    select: { id: true },
+  });
+  if (answers.length === 0) return;
+  await scoringQueue.addBulk(
+    answers.map((a) => ({ name: 'score', data: { answerId: a.id, sessionId } })),
+  );
 }
