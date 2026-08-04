@@ -105,12 +105,14 @@ Both apps type-check clean (`tsc --noEmit`). **Core-loop Steps 1–2 done:**
 - **Step 2** — candidate session backend + wired screens: validate link → timed one-at-a-time
   session → passive proctoring events → submit. Link status flips to `submitted`.
 - **Step 3** — AI scoring: BullMQ + Redis scoring queue/worker (`workers/`, run via
-  `npm run dev:worker`), `scoring.service` (Claude `claude-sonnet-4-6` @ temp 0, with a dev stub
-  when no API key), `report.service` (compiles overall %, verdict, proctoring counts on completion).
-  Enqueued per answer on submit. Real Score + Report rows now exist; link `overall_score` populates.
+  `npm run dev:worker`), `scoring.service` (Claude `claude-sonnet-4-6` @ temp 0, dev stub when no key),
+  `report.service` (compiles overall %, verdict, proctoring counts on completion). Enqueued per answer on submit.
+- **Step 4** — real report: `GET /reports/session/:id` (ownership-enforced; 202 while scoring, 200 full
+  per docs/08) with the **Report screen wired to it** (loading / still-scoring auto-refresh / not-found).
+  Interviewer email notification on report-ready via Resend (guarded log without `RESEND_API_KEY`).
 
-**Not yet built (backend):** the real report API + wiring the mock ReportPage to it, PDF (Puppeteer),
-and email (Resend) — Step 4.
+**The core loop is complete end to end** — build → link → proctored session → AI scoring → real report.
+**Not yet built:** PDF export (Puppeteer/R2), study-mode backend (Phase 2), auth hardening/deploy.
 
 **Frontend UI redesign (done, ahead of backend):** Modern-SaaS indigo design system
 (`components/ui/*` primitives, `components/layout/AppShell` with a Hire⇄Prepare mode

@@ -3,7 +3,6 @@ import {
   LayoutDashboard,
   Library,
   FilePlus2,
-  BarChart3,
   GraduationCap,
   BookOpenCheck,
   Timer,
@@ -27,7 +26,6 @@ const interviewerNav: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
   { to: '/bank', label: 'Question Bank', icon: <Library size={18} /> },
   { to: '/build', label: 'New Assessment', icon: <FilePlus2 size={18} /> },
-  { to: '/reports/c1', label: 'Reports', icon: <BarChart3 size={18} /> },
 ];
 
 const studyNav: NavItem[] = [

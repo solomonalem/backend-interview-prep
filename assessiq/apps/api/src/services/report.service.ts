@@ -1,5 +1,8 @@
+import type { Difficulty, ReportResponse, ReportScore } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
+import { AppError } from '../middleware/error.middleware.js';
 import { verdictFor } from '../utils/score-calc.js';
+import { sendReportReady } from './email.service.js';
 
 function avg(nums: number[]): number {
   if (nums.length === 0) return 0;
@@ -33,6 +36,7 @@ export async function compileReport(sessionId: string): Promise<void> {
     include: {
       answers: { include: { score: true } },
       behavior_events: { select: { type: true } },
+      assessment: { select: { title: true, owner: { select: { email: true } } } },
     },
   });
   if (!session) return;
@@ -40,6 +44,7 @@ export async function compileReport(sessionId: string): Promise<void> {
   const scores = session.answers.map((a) => a.score).filter((s): s is NonNullable<typeof s> => !!s);
   const overall = avg(scores.map((s) => s.total_pct));
   const seniorAvg = avg(scores.map((s) => s.senior_signal_pct));
+  const verdict = verdictFor(seniorAvg, overall);
 
   const counts = {
     tab: session.behavior_events.filter((e) => e.type === 'tab_switch').length,
@@ -52,7 +57,7 @@ export async function compileReport(sessionId: string): Promise<void> {
     data: {
       session_id: sessionId,
       overall_pct: overall,
-      verdict: verdictFor(seniorAvg, overall),
+      verdict,
       tab_switch_count: counts.tab,
       focus_loss_count: counts.focus,
       paste_count: counts.paste,
@@ -60,5 +65,135 @@ export async function compileReport(sessionId: string): Promise<void> {
       proctoring_context: proctoringNote(counts),
     },
   });
-  // TODO (Step 4): render PDF (Puppeteer → R2) and email the interviewer (Resend).
+
+  // Notify the interviewer (guarded — logs when no email key). Never block on it.
+  try {
+    const baseUrl = process.env.CLIENT_URL ?? 'http://localhost:5173';
+    await sendReportReady(session.assessment.owner.email, {
+      candidateLabel: session.candidate_label ?? 'Candidate',
+      overallPct: overall,
+      verdict,
+      reportUrl: `${baseUrl}/reports/${sessionId}`,
+    });
+  } catch (err) {
+    console.error('[report] email notification failed (non-fatal):', err);
+  }
+  // TODO (later): render PDF (Puppeteer → R2) and attach to the report.
+}
+
+// ── GET /reports/session/:id ─────────────────────────────────────────────────
+export async function getReport(
+  ownerId: string,
+  sessionId: string,
+): Promise<{ code: number; body: ReportResponse }> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: {
+      assessment: { select: { title: true, timer_seconds: true, owner_id: true } },
+      answers: {
+        orderBy: { position: 'asc' },
+        include: {
+          question: { select: { id: true, text: true, topic: true, difficulty: true } },
+          score: true,
+        },
+      },
+      behavior_events: true,
+      report: true,
+    },
+  });
+  // Not found OR not owned → 404 (don't leak existence of others' sessions).
+  if (!session || session.assessment.owner_id !== ownerId) {
+    throw new AppError(404, 'REPORT_NOT_FOUND', 'Report not found');
+  }
+
+  const totalAnswers = session.answers.length;
+  const scoredCount = session.answers.filter((a) => a.score).length;
+
+  if (!session.report) {
+    return {
+      code: 202,
+      body: { status: 'scoring_in_progress', answers_scored: scoredCount, total_answers: totalAnswers },
+    };
+  }
+
+  const scores = session.answers.map((a) => a.score).filter((s): s is NonNullable<typeof s> => !!s);
+  const timeUsed =
+    session.submitted_at && session.started_at
+      ? session.submitted_at.getTime() - session.started_at.getTime()
+      : 0;
+
+  const pastedPositions = new Set(
+    session.behavior_events.filter((e) => e.type === 'paste').map((e) => e.question_index),
+  );
+
+  return {
+    code: 200,
+    body: {
+      session: {
+        id: session.id,
+        candidate_label: session.candidate_label,
+        started_at: session.started_at?.toISOString() ?? null,
+        submitted_at: session.submitted_at?.toISOString() ?? null,
+        time_used_ms: timeUsed,
+        auto_submitted: session.auto_submitted,
+      },
+      assessment: { title: session.assessment.title, timer_seconds: session.assessment.timer_seconds },
+      overall: {
+        total_pct: session.report.overall_pct,
+        verdict: session.report.verdict,
+        core_avg: avg(scores.map((s) => s.core_pct)),
+        senior_signal_avg: avg(scores.map((s) => s.senior_signal_pct)),
+        trap_avg: avg(scores.map((s) => s.trap_pct)),
+        evidence_avg: avg(scores.map((s) => s.evidence_pct)),
+      },
+      proctoring: {
+        tab_switch_count: session.report.tab_switch_count,
+        tab_switch_timestamps: session.behavior_events
+          .filter((e) => e.type === 'tab_switch')
+          .map((e) => ({ timestamp: Number(e.timestamp), question_index: e.question_index })),
+        focus_loss_count: session.report.focus_loss_count,
+        paste_events: session.behavior_events
+          .filter((e) => e.type === 'paste')
+          .map((e) => ({
+            timestamp: Number(e.timestamp),
+            question_index: e.question_index,
+            char_count: e.char_count ?? 0,
+          })),
+        idle_count: session.report.idle_count,
+        context_note: session.report.proctoring_context,
+      },
+      questions: session.answers.map((a) => {
+        const score: ReportScore | null = a.score
+          ? {
+              total_pct: a.score.total_pct,
+              core_pct: a.score.core_pct,
+              core_reasoning: a.score.core_reasoning,
+              senior_signal_pct: a.score.senior_signal_pct,
+              senior_signal_reasoning: a.score.senior_signal_reasoning,
+              trap_pct: a.score.trap_pct,
+              trap_reasoning: a.score.trap_reasoning,
+              evidence_pct: a.score.evidence_pct,
+              evidence_reasoning: a.score.evidence_reasoning,
+              what_was_hit: a.score.what_was_hit,
+              what_was_missed: a.score.what_was_missed,
+              recommended_probe: a.score.recommended_probe,
+            }
+          : null;
+        return {
+          position: a.position,
+          question: {
+            id: a.question.id,
+            text: a.question.text,
+            topic: a.question.topic,
+            difficulty: a.question.difficulty as Difficulty,
+          },
+          answer: { text: a.text, time_spent_ms: a.time_spent_ms, paste_detected: pastedPositions.has(a.position) },
+          score,
+          confidence_rating: a.confidence_rating,
+          confidence_flag: a.score?.confidence_flag ?? null,
+        };
+      }),
+      pdf_url: session.report.pdf_url,
+    },
+  };
 }
