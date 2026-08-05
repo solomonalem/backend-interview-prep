@@ -1,5 +1,15 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Flame, CalendarClock, CheckCircle2, Trophy, ArrowUpRight, Target } from 'lucide-react';
+import {
+  Flame,
+  CalendarClock,
+  Target as TargetIcon,
+  Trophy,
+  ArrowUpRight,
+  Target,
+  AlertTriangle,
+  BookOpen,
+} from 'lucide-react';
 import {
   Button,
   Card,
@@ -9,54 +19,121 @@ import {
   ProgressBar,
   StatCard,
   Badge,
+  Spinner,
+  EmptyState,
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
-import { studyStats, weakTopics, topicProgress } from '../../data/mock';
+import { studyApi } from '../../api/study.api';
+import { ApiRequestError } from '../../api/client';
+import type { StudyDeckResponse } from '@assessiq/types';
 
 export default function StudyDashboardPage() {
-  const focus = [...weakTopics].sort((a, b) => a.confidence - b.confidence);
-  const streak = Math.min(7, Math.max(0, studyStats.streak_days));
+  const [deck, setDeck] = useState<StudyDeckResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError(null);
+    studyApi
+      .deck()
+      .then((data) => {
+        if (alive) setDeck(data);
+      })
+      .catch((e) => {
+        if (alive)
+          setError(
+            e instanceof ApiRequestError ? e.message : 'Could not load your study deck.',
+          );
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const header = (
+    <PageHeader
+      title="Your prep"
+      subtitle="Spaced review keyed to where you're weakest. Show up daily — the plan does the rest."
+      actions={
+        <Link to="/study/session">
+          <Button>
+            <Target size={16} /> Start today's review
+          </Button>
+        </Link>
+      }
+    />
+  );
+
+  if (loading) {
+    return (
+      <>
+        {header}
+        <div className="flex items-center justify-center py-24">
+          <Spinner className="h-6 w-6" />
+        </div>
+      </>
+    );
+  }
+
+  if (error || !deck) {
+    return (
+      <>
+        {header}
+        <Card>
+          <CardBody>
+            <EmptyState
+              icon={<AlertTriangle size={20} />}
+              title="We couldn't load your prep"
+              hint={error ?? 'Please try again in a moment.'}
+            />
+          </CardBody>
+        </Card>
+      </>
+    );
+  }
+
+  const focus = deck.weak_topics; // already sorted weakest-first
+  const mastery =
+    focus.length > 0
+      ? Math.round(focus.reduce((sum, t) => sum + t.avg_confidence, 0) / focus.length)
+      : 0;
+  const streak = Math.min(7, Math.max(0, deck.streak_days));
 
   return (
     <>
-      <PageHeader
-        title="Your prep"
-        subtitle="Spaced review keyed to where you're weakest. Show up daily — the plan does the rest."
-        actions={
-          <Link to="/study/session">
-            <Button>
-              <Target size={16} /> Start today's review
-            </Button>
-          </Link>
-        }
-      />
+      {header}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard
           icon={<Flame size={18} />}
           label="Day streak"
-          value={studyStats.streak_days}
+          value={deck.streak_days}
           sub="keep it alive"
           tone="amber"
         />
         <StatCard
           icon={<CalendarClock size={18} />}
           label="Due today"
-          value={studyStats.due_today}
+          value={deck.due_today.length}
           sub="cards to review"
           tone="brand"
         />
         <StatCard
-          icon={<CheckCircle2 size={18} />}
-          label="This week"
-          value={studyStats.reviewed_this_week}
-          sub="cards reviewed"
+          icon={<TargetIcon size={18} />}
+          label="Focus areas"
+          value={deck.weak_topics.length}
+          sub="topics to drill"
           tone="emerald"
         />
         <StatCard
           icon={<Trophy size={18} />}
           label="Mastery"
-          value={`${studyStats.mastery_pct}%`}
+          value={`${mastery}%`}
           sub="across all topics"
           tone="sky"
         />
@@ -105,20 +182,28 @@ export default function StudyDashboardPage() {
             </Link>
           </CardHeader>
           <CardBody className="space-y-4">
-            {focus.map((t) => (
-              <div key={t.topic}>
-                <div className="flex items-center justify-between mb-1.5">
-                  <p className="text-sm font-medium text-slate-700">{t.topic}</p>
-                  <div className="flex items-center gap-2">
-                    <Badge tone="slate">{t.count} cards</Badge>
-                    <span className="text-xs font-semibold text-slate-500 tabular w-9 text-right">
-                      {t.confidence}%
-                    </span>
+            {focus.length === 0 ? (
+              <EmptyState
+                icon={<BookOpen size={20} />}
+                title="No reviews yet"
+                hint="Start today's review to build your focus areas."
+              />
+            ) : (
+              focus.map((t) => (
+                <div key={t.topic}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <p className="text-sm font-medium text-slate-700">{t.topic}</p>
+                    <div className="flex items-center gap-2">
+                      <Badge tone="slate">{t.question_count} cards</Badge>
+                      <span className="text-xs font-semibold text-slate-500 tabular w-9 text-right">
+                        {Math.round(t.avg_confidence)}%
+                      </span>
+                    </div>
                   </div>
+                  <ProgressBar value={t.avg_confidence} />
                 </div>
-                <ProgressBar value={t.confidence} />
-              </div>
-            ))}
+              ))
+            )}
           </CardBody>
         </Card>
 
@@ -128,20 +213,25 @@ export default function StudyDashboardPage() {
             <h3 className="font-semibold text-slate-800">Topic mastery</h3>
           </CardHeader>
           <CardBody className="space-y-4">
-            {topicProgress.map((t) => {
-              const pct = t.total > 0 ? (t.mastered / t.total) * 100 : 0;
-              return (
+            {focus.length === 0 ? (
+              <EmptyState
+                icon={<BookOpen size={20} />}
+                title="No reviews yet"
+                hint="Start today's review to start building mastery."
+              />
+            ) : (
+              focus.map((t) => (
                 <div key={t.topic}>
                   <div className="flex items-center justify-between mb-1.5">
                     <p className="text-sm font-medium text-slate-700">{t.topic}</p>
                     <span className="text-xs font-semibold text-slate-500 tabular">
-                      {t.mastered}/{t.total}
+                      {t.question_count} reviewed
                     </span>
                   </div>
-                  <ProgressBar value={pct} tone="bg-brand-500" />
+                  <ProgressBar value={t.avg_confidence} tone="bg-brand-500" />
                 </div>
-              );
-            })}
+              ))
+            )}
           </CardBody>
         </Card>
       </div>

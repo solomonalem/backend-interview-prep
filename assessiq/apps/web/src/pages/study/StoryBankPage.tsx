@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react';
-import { Plus, X, ChevronDown, BookMarked, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Plus, X, ChevronDown, BookMarked, Sparkles, Trash2, AlertCircle } from 'lucide-react';
+import type { StoryDTO, StoryType } from '@assessiq/types';
 import {
   Badge,
   Button,
@@ -11,38 +12,32 @@ import {
   Input,
   Textarea,
   Select,
+  Spinner,
   EmptyState,
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
-import { stories as seedStories, type MockStory } from '../../data/mock';
+import { studyApi } from '../../api/study.api';
+import { ApiRequestError } from '../../api/client';
 
-const typeTone: Record<MockStory['type'], 'rose' | 'amber' | 'brand' | 'violet'> = {
+const typeTone: Record<StoryType, 'rose' | 'amber' | 'brand' | 'violet'> = {
   incident: 'rose',
   bug_fix: 'amber',
   feature: 'brand',
   architecture: 'violet',
 };
 
-const typeLabel: Record<MockStory['type'], string> = {
+const typeLabel: Record<StoryType, string> = {
   incident: 'Incident',
   bug_fix: 'Bug fix',
   feature: 'Feature',
   architecture: 'Architecture',
 };
 
-const TYPES: MockStory['type'][] = ['bug_fix', 'feature', 'incident', 'architecture'];
-
-// Deterministic tag suggestions per type (no Math.random).
-const suggestedTags: Record<MockStory['type'], string[]> = {
-  incident: ['RCA', 'On-call'],
-  bug_fix: ['Reliability', 'Testing'],
-  feature: ['Product', 'Delivery'],
-  architecture: ['System Design', 'Scale'],
-};
+const TYPES: StoryType[] = ['bug_fix', 'feature', 'incident', 'architecture'];
 
 interface Draft {
   title: string;
-  type: MockStory['type'];
+  type: StoryType;
   situation: string;
   task: string;
   action: string;
@@ -58,40 +53,88 @@ const emptyDraft: Draft = {
   result: '',
 };
 
+function errMessage(e: unknown): string {
+  if (e instanceof ApiRequestError) return e.message;
+  return 'Something went wrong. Please try again.';
+}
+
 export default function StoryBankPage() {
-  const [list, setList] = useState<MockStory[]>(seedStories);
+  const [list, setList] = useState<StoryDTO[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const counter = useRef(0);
 
-  function nextId(): string {
-    counter.current += 1;
-    const rnd = globalThis.crypto?.randomUUID?.();
-    return rnd ?? `story-${list.length + counter.current}`;
-  }
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [suggested, setSuggested] = useState<string[] | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  function save() {
-    if (!draft.title.trim()) return;
-    const story: MockStory = {
-      id: nextId(),
-      title: draft.title.trim(),
-      type: draft.type,
-      situation: draft.situation.trim(),
-      task: draft.task.trim(),
-      action: draft.action.trim(),
-      result: draft.result.trim(),
-      tags: suggestedTags[draft.type],
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { stories } = await studyApi.listStories();
+        if (alive) setList(stories);
+      } catch (e) {
+        if (alive) setLoadError(errMessage(e));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
     };
-    setList((l) => [story, ...l]);
-    setDraft(emptyDraft);
-    setAdding(false);
-    setExpanded(story.id);
+  }, []);
+
+  async function save() {
+    if (!draft.title.trim() || saving) return;
+    setSaving(true);
+    setFormError(null);
+    try {
+      const created = await studyApi.createStory({
+        title: draft.title.trim(),
+        type: draft.type,
+        situation: draft.situation.trim(),
+        task: draft.task.trim(),
+        action: draft.action.trim(),
+        result: draft.result.trim(),
+      });
+      const { suggested_tags, ...story } = created;
+      setList((l) => [story, ...l]);
+      setDraft(emptyDraft);
+      setAdding(false);
+      setExpanded(story.id);
+      setSuggested(suggested_tags ?? []);
+    } catch (e) {
+      setFormError(errMessage(e));
+    } finally {
+      setSaving(false);
+    }
   }
 
   function cancel() {
     setDraft(emptyDraft);
+    setFormError(null);
     setAdding(false);
+  }
+
+  async function remove(id: string) {
+    if (deletingId) return;
+    setDeletingId(id);
+    setActionError(null);
+    try {
+      await studyApi.deleteStory(id);
+      setList((l) => l.filter((s) => s.id !== id));
+      setExpanded((cur) => (cur === id ? null : cur));
+    } catch (e) {
+      setActionError(errMessage(e));
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   return (
@@ -100,7 +143,13 @@ export default function StoryBankPage() {
         title="Story Bank"
         subtitle="Your STAR stories, ready to pull in behavioral rounds. Capture them while they're fresh."
         actions={
-          <Button onClick={() => setAdding((a) => !a)} variant={adding ? 'secondary' : 'primary'}>
+          <Button
+            onClick={() => {
+              setSuggested(null);
+              setAdding((a) => !a);
+            }}
+            variant={adding ? 'secondary' : 'primary'}
+          >
             {adding ? (
               <>
                 <X size={16} /> Close
@@ -133,7 +182,7 @@ export default function StoryBankPage() {
                 <Label>Type</Label>
                 <Select
                   value={draft.type}
-                  onChange={(e) => setDraft((d) => ({ ...d, type: e.target.value as MockStory['type'] }))}
+                  onChange={(e) => setDraft((d) => ({ ...d, type: e.target.value as StoryType }))}
                 >
                   {TYPES.map((t) => (
                     <option key={t} value={t}>
@@ -173,19 +222,67 @@ export default function StoryBankPage() {
               <Sparkles size={13} className="text-brand-400" /> We'll suggest tags for you on save.
             </p>
 
+            {formError && (
+              <p className="flex items-center gap-1.5 text-sm text-rose-600">
+                <AlertCircle size={14} /> {formError}
+              </p>
+            )}
+
             <div className="flex justify-end gap-2 pt-1">
-              <Button variant="secondary" onClick={cancel}>
+              <Button variant="secondary" onClick={cancel} disabled={saving}>
                 Cancel
               </Button>
-              <Button onClick={save} disabled={!draft.title.trim()}>
-                Save story
+              <Button onClick={save} disabled={!draft.title.trim() || saving}>
+                {saving ? (
+                  <>
+                    <Spinner /> Saving…
+                  </>
+                ) : (
+                  'Save story'
+                )}
               </Button>
             </div>
           </CardBody>
         </Card>
       )}
 
-      {list.length === 0 ? (
+      {suggested && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5 rounded-lg bg-brand-50 px-4 py-2.5 text-sm text-brand-700 ring-1 ring-brand-200 animate-fade-in">
+          <Sparkles size={14} className="text-brand-500" />
+          <span className="font-medium">Suggested tags:</span>
+          {suggested.length > 0 ? (
+            suggested.map((t) => (
+              <Badge key={t} tone="brand">
+                {t}
+              </Badge>
+            ))
+          ) : (
+            <span className="text-brand-500">none for this one</span>
+          )}
+        </div>
+      )}
+
+      {actionError && (
+        <p className="mb-4 flex items-center gap-1.5 text-sm text-rose-600">
+          <AlertCircle size={14} /> {actionError}
+        </p>
+      )}
+
+      {loading ? (
+        <Card>
+          <CardBody className="flex items-center justify-center gap-2 py-12 text-slate-400">
+            <Spinner /> Loading your stories…
+          </CardBody>
+        </Card>
+      ) : loadError ? (
+        <Card>
+          <EmptyState
+            icon={<AlertCircle size={22} />}
+            title="Couldn't load your stories"
+            hint={loadError}
+          />
+        </Card>
+      ) : list.length === 0 ? (
         <Card>
           <EmptyState
             icon={<BookMarked size={22} />}
@@ -199,26 +296,36 @@ export default function StoryBankPage() {
             const open = expanded === s.id;
             return (
               <Card key={s.id} hover={!open} className={cn(open && 'ring-1 ring-brand-200')}>
-                <button
-                  onClick={() => setExpanded(open ? null : s.id)}
-                  className="w-full text-left px-5 py-4 flex items-start gap-4"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[15px] font-medium text-slate-800 leading-snug">{s.title}</p>
-                    <div className="mt-2.5 flex flex-wrap gap-1.5">
-                      <Badge tone={typeTone[s.type]}>{typeLabel[s.type]}</Badge>
-                      {s.tags.map((t) => (
-                        <Badge key={t} tone="slate">
-                          {t}
-                        </Badge>
-                      ))}
+                <div className="flex items-start gap-2">
+                  <button
+                    onClick={() => setExpanded(open ? null : s.id)}
+                    className="flex-1 min-w-0 text-left px-5 py-4 flex items-start gap-4"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[15px] font-medium text-slate-800 leading-snug">{s.title}</p>
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                        <Badge tone={typeTone[s.type]}>{typeLabel[s.type]}</Badge>
+                        {s.tags.map((t) => (
+                          <Badge key={t} tone="slate">
+                            {t}
+                          </Badge>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                  <ChevronDown
-                    size={18}
-                    className={cn('text-slate-400 mt-0.5 transition-transform', open && 'rotate-180')}
-                  />
-                </button>
+                    <ChevronDown
+                      size={18}
+                      className={cn('text-slate-400 mt-0.5 transition-transform', open && 'rotate-180')}
+                    />
+                  </button>
+                  <button
+                    onClick={() => remove(s.id)}
+                    disabled={deletingId === s.id}
+                    aria-label="Delete story"
+                    className="mr-3 mt-4 shrink-0 rounded-md p-1.5 text-slate-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
+                  >
+                    {deletingId === s.id ? <Spinner /> : <Trash2 size={16} />}
+                  </button>
+                </div>
 
                 {open && (
                   <div className="px-5 pb-5 pt-1 grid gap-3 animate-fade-in">

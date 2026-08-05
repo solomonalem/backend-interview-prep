@@ -10,9 +10,11 @@ import {
   Minus,
   RotateCcw,
   Layers,
+  AlertTriangle,
 } from 'lucide-react';
-import type { QuestionListItem } from '@assessiq/types';
-import { questionsApi } from '../../api/questions.api';
+import type { StudyDeckItem, StudyRating } from '@assessiq/types';
+import { studyApi } from '../../api/study.api';
+import { ApiRequestError } from '../../api/client';
 import {
   Badge,
   Button,
@@ -27,23 +29,33 @@ import {
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
 
-type Rating = 'missed' | 'partial' | 'got_it';
-
 export default function StudyModePage() {
-  const [deck, setDeck] = useState<QuestionListItem[]>([]);
+  const [deck, setDeck] = useState<StudyDeckItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
-  const [tally, setTally] = useState<Record<Rating, number>>({ missed: 0, partial: 0, got_it: 0 });
+  const [tally, setTally] = useState<Record<StudyRating, number>>({
+    missed: 0,
+    partial: 0,
+    got_it: 0,
+  });
   const [done, setDone] = useState(false);
 
-  useEffect(() => {
+  function loadDeck() {
     let alive = true;
     setLoading(true);
-    questionsApi
-      .list({ limit: 10 })
+    setError(null);
+    studyApi
+      .deck()
       .then((r) => {
-        if (alive) setDeck(r.questions);
+        if (alive) setDeck(r.due_today);
+      })
+      .catch((e) => {
+        if (alive)
+          setError(
+            e instanceof ApiRequestError ? e.message : 'Could not load your deck. Please try again.',
+          );
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -51,16 +63,24 @@ export default function StudyModePage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }
+
+  useEffect(loadDeck, []);
 
   function reset() {
     setIndex(0);
     setRevealed(false);
     setDone(false);
     setTally({ missed: 0, partial: 0, got_it: 0 });
+    loadDeck();
   }
 
-  function rate(r: Rating) {
+  function rate(r: StudyRating) {
+    const card = deck[index];
+    if (card) {
+      // Fire-and-advance — record in the background, ignore transient failures.
+      void studyApi.recordProgress(card.question.id, r).catch(() => {});
+    }
     setTally((t) => ({ ...t, [r]: t[r] + 1 }));
     if (index + 1 >= deck.length) {
       setDone(true);
@@ -83,6 +103,22 @@ export default function StudyModePage() {
     );
   }
 
+  if (error) {
+    return (
+      <>
+        <PageHeader title="Today's review" subtitle="Spaced-repetition flashcards from the question bank." />
+        <Card>
+          <EmptyState icon={<AlertTriangle size={22} />} title="Couldn't load your deck" hint={error} />
+          <CardBody className="flex justify-center pb-8 pt-0">
+            <Button variant="secondary" onClick={loadDeck}>
+              <RotateCcw size={16} /> Try again
+            </Button>
+          </CardBody>
+        </Card>
+      </>
+    );
+  }
+
   if (deck.length === 0) {
     return (
       <>
@@ -93,6 +129,11 @@ export default function StudyModePage() {
             title="No cards due"
             hint="Nothing to review right now. Check back later or add more topics."
           />
+          <CardBody className="flex justify-center pb-8 pt-0">
+            <Link to="/study">
+              <Button variant="secondary">Back to dashboard</Button>
+            </Link>
+          </CardBody>
         </Card>
       </>
     );
@@ -129,8 +170,9 @@ export default function StudyModePage() {
     );
   }
 
-  const card = deck[index];
-  if (!card) return null;
+  const item = deck[index];
+  if (!item) return null;
+  const card = item.question;
   const progress = ((index + (revealed ? 0.5 : 0)) / deck.length) * 100;
 
   return (
@@ -153,7 +195,6 @@ export default function StudyModePage() {
             <Badge tone="brand">{card.topic}</Badge>
             <Badge tone={difficultyTone[card.difficulty] ?? 'slate'}>{card.difficulty}</Badge>
             <Badge tone="slate">{card.type}</Badge>
-            {card.domain && <Badge tone="violet">{card.domain}</Badge>}
           </div>
 
           <p className="text-lg font-semibold text-slate-800 leading-snug">{card.text}</p>

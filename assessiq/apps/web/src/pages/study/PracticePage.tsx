@@ -10,9 +10,12 @@ import {
   ThumbsUp,
   TrendingUp,
   RotateCcw,
+  AlertTriangle,
 } from 'lucide-react';
-import type { QuestionListItem } from '@assessiq/types';
+import type { QuestionListItem, PracticeResponse } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
+import { studyApi } from '../../api/study.api';
+import { ApiRequestError } from '../../api/client';
 import {
   Badge,
   Button,
@@ -29,30 +32,10 @@ import {
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
 
-interface Scores {
-  core: number;
-  senior: number;
-  trap: number;
-  evidence: number;
-}
-
 function fmt(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-// Deterministic pseudo-scores derived from the answer (no Math.random).
-function deriveScores(answer: string): Scores {
-  const words = answer.trim().split(/\s+/).filter(Boolean).length;
-  const chars = answer.trim().length;
-  const clamp = (n: number) => Math.max(40, Math.min(95, Math.round(n)));
-  return {
-    core: clamp(48 + words * 1.4),
-    senior: clamp(40 + words * 1.1 + (chars % 17)),
-    trap: clamp(44 + words * 0.9 + (chars % 11)),
-    evidence: clamp(42 + words * 1.2 + (chars % 13)),
-  };
 }
 
 export default function PracticePage() {
@@ -63,7 +46,8 @@ export default function PracticePage() {
   const [seconds, setSeconds] = useState(0);
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState<'writing' | 'scoring' | 'result'>('writing');
-  const [scores, setScores] = useState<Scores | null>(null);
+  const [result, setResult] = useState<PracticeResponse | null>(null);
+  const [scoreError, setScoreError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -115,17 +99,29 @@ export default function PracticePage() {
     setSeconds(0);
     setRunning(false);
     setPhase('writing');
-    setScores(null);
+    setResult(null);
+    setScoreError(null);
   }
 
   function submit() {
-    if (!answer.trim()) return;
+    if (!answer.trim() || !selected) return;
     setRunning(false);
+    setScoreError(null);
     setPhase('scoring');
-    setTimeout(() => {
-      setScores(deriveScores(answer));
-      setPhase('result');
-    }, 1200);
+    studyApi
+      .practice(selected.id, answer)
+      .then((r) => {
+        setResult(r);
+        setPhase('result');
+      })
+      .catch((e) => {
+        setScoreError(
+          e instanceof ApiRequestError
+            ? e.message
+            : 'Scoring failed. Please try submitting again.',
+        );
+        setPhase('writing');
+      });
   }
 
   if (loading) {
@@ -151,6 +147,8 @@ export default function PracticePage() {
       </>
     );
   }
+
+  const score = result?.score;
 
   return (
     <>
@@ -209,6 +207,11 @@ export default function PracticePage() {
               onFocus={beginTimer}
               disabled={phase === 'scoring'}
             />
+            {scoreError && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                <AlertTriangle size={15} /> {scoreError}
+              </div>
+            )}
             <div className="mt-4 flex items-center justify-between">
               <p className="text-xs text-slate-400">
                 {answer.trim().split(/\s+/).filter(Boolean).length} words
@@ -229,39 +232,55 @@ export default function PracticePage() {
         </Card>
       )}
 
-      {phase === 'result' && scores && (
+      {phase === 'result' && result && score && (
         <div className="space-y-5 animate-fade-in">
           <Card>
             <CardHeader>
               <h3 className="font-semibold text-slate-800 inline-flex items-center gap-2">
                 <Sparkles size={16} className="text-brand-500" /> AI feedback
               </h3>
-              <span className="text-xs text-slate-400 tabular">answered in {fmt(seconds)}</span>
+              <span className="text-xs text-slate-400 tabular">
+                {score.total_pct}% overall · answered in {fmt(seconds)}
+              </span>
             </CardHeader>
             <CardBody className="space-y-4">
-              <ScoreRow label="Core answer" value={scores.core} />
-              <ScoreRow label="Senior signal" value={scores.senior} />
-              <ScoreRow label="Trap awareness" value={scores.trap} />
-              <ScoreRow label="Evidence & specifics" value={scores.evidence} />
+              <ScoreRow label="Core answer" value={score.core_pct} note={score.core_reasoning} />
+              <ScoreRow label="Senior signal" value={score.senior_signal_pct} note={score.senior_signal_reasoning} />
+              <ScoreRow label="Trap awareness" value={score.trap_pct} note={score.trap_reasoning} />
+              <ScoreRow label="Evidence & specifics" value={score.evidence_pct} note={score.evidence_reasoning} />
 
               <div className="grid sm:grid-cols-2 gap-3 pt-2">
                 <div className="rounded-lg p-3.5 bg-emerald-50">
                   <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide mb-2 text-emerald-700">
                     <ThumbsUp size={14} /> What you did well
                   </p>
-                  <ul className="space-y-1.5 text-sm text-slate-600 leading-relaxed list-disc pl-4">
-                    <li>Directly addressed the core of the question.</li>
-                    <li>Structured the answer clearly and stayed on topic.</li>
-                  </ul>
+                  {score.what_was_hit.length > 0 ? (
+                    <ul className="space-y-1.5 text-sm text-slate-600 leading-relaxed list-disc pl-4">
+                      {score.what_was_hit.map((item, i) => (
+                        <li key={i}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-slate-500 italic">
+                      Nothing stood out yet — add depth and specifics to earn credit here.
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-lg p-3.5 bg-amber-50">
                   <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide mb-2 text-amber-700">
                     <TrendingUp size={14} /> To go deeper
                   </p>
-                  <ul className="space-y-1.5 text-sm text-slate-600 leading-relaxed list-disc pl-4">
-                    <li>Name a concrete tradeoff or failure mode to show seniority.</li>
-                    <li>Back a claim with a metric or a real example.</li>
-                  </ul>
+                  {score.what_was_missed.length > 0 ? (
+                    <ul className="space-y-1.5 text-sm text-slate-600 leading-relaxed list-disc pl-4">
+                      {score.what_was_missed.map((item, i) => (
+                        <li key={i}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-slate-500 italic">
+                      Nothing major missing — strong, well-rounded answer.
+                    </p>
+                  )}
                 </div>
               </div>
             </CardBody>
@@ -274,9 +293,9 @@ export default function PracticePage() {
               <span className="text-xs text-slate-400">how a senior would frame it</span>
             </CardHeader>
             <CardBody className="grid gap-3">
-              <Rubric icon={<BookOpen size={14} />} label="Core answer" tone="text-slate-600 bg-slate-50" body={selected.core_answer_display} />
-              <Rubric icon={<Target size={14} />} label="Senior signal" tone="text-teal-700 bg-teal-50" body={selected.senior_signal_display} />
-              <Rubric icon={<ShieldAlert size={14} />} label="Trap" tone="text-rose-700 bg-rose-50" body={selected.trap_display} />
+              <Rubric icon={<BookOpen size={14} />} label="Core answer" tone="text-slate-600 bg-slate-50" body={result.rubric.core_answer_display} />
+              <Rubric icon={<Target size={14} />} label="Senior signal" tone="text-teal-700 bg-teal-50" body={result.rubric.senior_signal_display} />
+              <Rubric icon={<ShieldAlert size={14} />} label="Trap" tone="text-rose-700 bg-rose-50" body={result.rubric.trap_display} />
             </CardBody>
           </Card>
 
@@ -294,7 +313,7 @@ export default function PracticePage() {
   );
 }
 
-function ScoreRow({ label, value }: { label: string; value: number }) {
+function ScoreRow({ label, value, note }: { label: string; value: number; note?: string }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -302,6 +321,7 @@ function ScoreRow({ label, value }: { label: string; value: number }) {
         <span className="text-xs font-semibold text-slate-500 tabular">{value}%</span>
       </div>
       <ProgressBar value={value} />
+      {note && <p className="mt-1.5 text-xs text-slate-500 leading-relaxed">{note}</p>}
     </div>
   );
 }
