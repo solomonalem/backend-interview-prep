@@ -14,10 +14,26 @@ import type {
   WeakTopic,
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
+import { anthropic, DECODE_MODEL, TAGGING_MODEL } from '../lib/claude.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { confidenceForRating, nextReviewDate } from '../utils/spaced-repetition.js';
 import { weightedTotal } from '../utils/score-calc.js';
 import { scoreAnswerText } from './scoring.service.js';
+
+// Small JSON helper for the cheap peripheral models (Haiku). Callers guard on
+// `anthropic` and fall back to a heuristic if this throws.
+async function callModelJSON<T>(model: string, system: string, user: string): Promise<T> {
+  const res = await anthropic!.messages.create({
+    model,
+    max_tokens: 700,
+    temperature: 0,
+    system,
+    messages: [{ role: 'user', content: user }],
+  });
+  const block = res.content[0];
+  if (!block || block.type !== 'text') throw new Error('unexpected response type');
+  return JSON.parse(block.text.replace(/```json|```/g, '').trim()) as T;
+}
 
 const DISPLAY_SELECT = {
   id: true,
@@ -224,19 +240,63 @@ function weightFor(topic: string, lc: string): JdWeight {
   return 'Differentiator';
 }
 
-export async function decodeJd(jdText: string): Promise<DecodeJdResponse> {
-  const counts = await topicCounts();
-  const lc = jdText.toLowerCase();
+const WEIGHT_ORDER: Record<JdWeight, number> = { Critical: 0, High: 1, Differentiator: 2, Low: 3 };
 
-  const order: Record<JdWeight, number> = { Critical: 0, High: 1, Differentiator: 2, Low: 3 };
+function decodeJdHeuristic(jdText: string, counts: Map<string, number>): DecodeJdResponse {
+  const lc = jdText.toLowerCase();
   const topics = [...counts.entries()]
     .map(([topic, question_count]) => ({ topic, weight: weightFor(topic, lc), question_count }))
-    .sort((a, b) => order[a.weight] - order[b.weight] || b.question_count - a.question_count);
-
+    .sort((a, b) => WEIGHT_ORDER[a.weight] - WEIGHT_ORDER[b.weight] || b.question_count - a.question_count);
   const firstLine = jdText.split('\n').map((l) => l.trim()).find((l) => l.length > 0);
-  const role_title = firstLine ? firstLine.slice(0, 80) : 'Software Engineer';
+  return {
+    role_title: firstLine ? firstLine.slice(0, 80) : 'Software Engineer',
+    domain: detectDomain(jdText),
+    topics,
+  };
+}
 
-  return { role_title, domain: detectDomain(jdText), topics };
+async function decodeJdClaude(jdText: string, counts: Map<string, number>): Promise<DecodeJdResponse> {
+  const known = [...counts.keys()];
+  const system =
+    'You analyze a technical job description and classify how central each known topic is. Return ONLY a JSON object, no prose, no markdown.';
+  const user = `Known topics (use only these): ${JSON.stringify(known)}
+
+Job description:
+${jdText}
+
+Return exactly:
+{"role_title": "<short role title>", "domain": "healthcare"|"fintech"|"general", "topics": [{"topic": "<one known topic>", "weight": "Critical"|"High"|"Differentiator"|"Low"}]}
+Weight every topic that is at all relevant. Critical = core to the role, High = important, Differentiator = nice-to-have edge, Low = barely mentioned.`;
+
+  const parsed = await callModelJSON<{
+    role_title?: string;
+    domain?: string | null;
+    topics?: { topic: string; weight: JdWeight }[];
+  }>(DECODE_MODEL, system, user);
+
+  const byTopic = new Map<string, JdWeight>();
+  for (const t of parsed.topics ?? []) {
+    if (counts.has(t.topic) && t.weight in WEIGHT_ORDER) byTopic.set(t.topic, t.weight);
+  }
+  // Complete the table: any known topic Claude omitted is 'Low'.
+  const topics = [...counts.entries()]
+    .map(([topic, question_count]) => ({ topic, weight: byTopic.get(topic) ?? 'Low', question_count }))
+    .sort((a, b) => WEIGHT_ORDER[a.weight] - WEIGHT_ORDER[b.weight] || b.question_count - a.question_count);
+
+  const domain = !parsed.domain || parsed.domain === 'general' ? null : parsed.domain;
+  return { role_title: (parsed.role_title || 'Software Engineer').slice(0, 80), domain, topics };
+}
+
+export async function decodeJd(jdText: string): Promise<DecodeJdResponse> {
+  const counts = await topicCounts();
+  if (anthropic) {
+    try {
+      return await decodeJdClaude(jdText, counts);
+    } catch (err) {
+      console.error('[decode-jd] Claude call failed, falling back to heuristic:', err);
+    }
+  }
+  return decodeJdHeuristic(jdText, counts);
 }
 
 // ── Stories ──────────────────────────────────────────────────────────────────
@@ -266,8 +326,7 @@ function toStoryDTO(s: {
   };
 }
 
-async function suggestTags(text: string): Promise<string[]> {
-  const counts = await topicCounts();
+function suggestTagsHeuristic(text: string, counts: Map<string, number>): string[] {
   const lc = text.toLowerCase();
   const tags = [...counts.keys()].filter((topic) =>
     topic
@@ -276,7 +335,6 @@ async function suggestTags(text: string): Promise<string[]> {
       .filter((t) => t.length > 2)
       .some((t) => lc.includes(t)),
   );
-  // A few extra signal words beyond the topic list.
   for (const [kw, tag] of [
     ['perform', 'Performance'],
     ['debug', 'Debugging'],
@@ -286,6 +344,34 @@ async function suggestTags(text: string): Promise<string[]> {
     if (lc.includes(kw) && !tags.includes(tag)) tags.push(tag);
   }
   return tags.slice(0, 5);
+}
+
+async function suggestTagsClaude(text: string, counts: Map<string, number>): Promise<string[]> {
+  const known = [...counts.keys()];
+  const system =
+    'You tag an engineering STAR story with the topics it maps to, for interview prep. Return ONLY a JSON array of strings.';
+  const user = `Known topics (prefer these): ${JSON.stringify(known)}
+
+Story:
+${text}
+
+Return a JSON array of up to 5 short, relevant tags. Prefer the known topics; you may add 1–2 concise skill tags (e.g. "Performance", "RCA") when clearly warranted.`;
+  const arr = await callModelJSON<unknown>(TAGGING_MODEL, system, user);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((t) => String(t)).filter((t) => t.length > 0).slice(0, 5);
+}
+
+async function suggestTags(text: string): Promise<string[]> {
+  const counts = await topicCounts();
+  if (anthropic) {
+    try {
+      const tags = await suggestTagsClaude(text, counts);
+      if (tags.length) return tags;
+    } catch (err) {
+      console.error('[tags] Claude call failed, falling back to heuristic:', err);
+    }
+  }
+  return suggestTagsHeuristic(text, counts);
 }
 
 export async function listStories(userId: string): Promise<StoryDTO[]> {
