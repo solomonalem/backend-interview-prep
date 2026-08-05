@@ -6,6 +6,7 @@ import { questionsRouter } from './routes/questions.js';
 import { assessmentsRouter } from './routes/assessments.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { reportsRouter } from './routes/reports.js';
+import { studyRouter } from './routes/study.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
 
 // Express app factory (exported for testing). Resource routers mount under /api/v1.
@@ -27,6 +28,7 @@ export function createApp(): Express {
   api.use('/assessments', assessmentsRouter);
   api.use('/sessions', sessionsRouter);
   api.use('/reports', reportsRouter);
+  api.use('/study', studyRouter);
   app.use('/api/v1', api);
 
   app.use(notFoundHandler);
