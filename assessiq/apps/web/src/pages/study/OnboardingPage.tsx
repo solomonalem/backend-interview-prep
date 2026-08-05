@@ -76,9 +76,10 @@ export default function OnboardingPage() {
               onChange={(e) => setJd(e.target.value)}
             />
           </div>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <p className="flex items-center gap-1.5 text-xs text-slate-400">
-              <FileText size={13} /> We analyze the description to weight your plan.
+              <FileText size={13} className="shrink-0" />
+              Sent to our server and an AI provider to decode it. We don't store it.
             </p>
             <Button onClick={run} disabled={!jd.trim() || loading}>
               {loading ? (
