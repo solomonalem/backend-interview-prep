@@ -26,7 +26,6 @@ const weightTone: Record<JdWeight, 'rose' | 'amber' | 'violet' | 'slate'> = {
 
 export default function OnboardingPage() {
   const [jd, setJd] = useState('');
-  const [resume, setResume] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DecodeJdResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,15 +74,6 @@ export default function OnboardingPage() {
               placeholder="Paste the full job description here…"
               value={jd}
               onChange={(e) => setJd(e.target.value)}
-            />
-          </div>
-          <div>
-            <Label>Your resume or key bullets (optional)</Label>
-            <Textarea
-              rows={4}
-              placeholder="Paste a few resume bullets so we can tailor to your experience…"
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
             />
           </div>
           <div className="flex items-center justify-between">
