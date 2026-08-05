@@ -1,4 +1,5 @@
 // Worker process entry point (run separately: npm run dev:worker).
+import '../lib/load-env.js'; // must be first — populates process.env from .env
 import { anthropic, SCORING_MODEL } from '../lib/claude.js';
 import { scoringWorker } from './scoring.worker.js';
 
