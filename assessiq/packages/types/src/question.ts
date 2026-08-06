@@ -10,6 +10,10 @@ export const QUESTION_TYPES: QuestionType[] = [
   'behavioral',
 ];
 
+// vetted = human-approved. draft = AI-generated, not yet reviewed. Retrieval
+// returns both, always labelled, so a draft can never pass for vetted.
+export type QuestionStatus = 'vetted' | 'draft';
+
 // Public shape of a question — NEVER includes the private `_guide` rubric fields.
 export interface QuestionListItem {
   id: string;
@@ -18,6 +22,7 @@ export interface QuestionListItem {
   difficulty: Difficulty;
   type: QuestionType;
   domain: string | null;
+  status: QuestionStatus;
   core_answer_display: string;
   senior_signal_display: string;
   trap_display: string;

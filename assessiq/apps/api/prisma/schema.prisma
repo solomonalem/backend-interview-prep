@@ -48,6 +48,9 @@ model Question {
 
   // Metadata
   is_active     Boolean       @default(true)
+  // vetted = human-approved and safe to use as-is. draft = AI-generated and
+  // not yet reviewed; must never be treated as vetted anywhere.
+  status        QuestionStatus @default(vetted)
   created_by    String?       // null = system question; cuid = user-created
   created_at    DateTime      @default(now())
   updated_at    DateTime      @updatedAt
@@ -58,7 +61,13 @@ model Question {
   @@index([topic])
   @@index([difficulty])
   @@index([domain])
+  @@index([status])
   @@map("questions")
+}
+
+enum QuestionStatus {
+  vetted
+  draft
 }
 
 enum Difficulty {
