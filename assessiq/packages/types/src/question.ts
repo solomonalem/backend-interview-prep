@@ -39,3 +39,28 @@ export interface QuestionFilters {
   page?: number;
   limit?: number;
 }
+
+// ── GET /questions/match ─────────────────────────────────────────────────────
+// Loose retrieval for the assessment builder: a question surfaces if it matches
+// AT LEAST ONE key, and is ranked by how many it matched. Deliberately not a
+// strict AND — with a small bank, strict matching returns nothing useful.
+export type QuestionMatchKey = 'topic' | 'difficulty' | 'type';
+
+export interface QuestionMatchFilters {
+  technology: string[]; // matched against Question.topic
+  seniority: Difficulty; // matched against Question.difficulty
+  type?: QuestionType[]; // matched against Question.type
+  limit?: number;
+}
+
+export interface QuestionMatchItem extends QuestionListItem {
+  matched_on: QuestionMatchKey[];
+  match_score: number; // matched_on.length — 3 is a full match
+}
+
+export interface QuestionMatchResponse {
+  questions: QuestionMatchItem[];
+  total: number;
+  page: number;
+  pages: number;
+}
