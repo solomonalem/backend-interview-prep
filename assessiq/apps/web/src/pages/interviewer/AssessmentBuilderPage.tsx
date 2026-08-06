@@ -20,7 +20,7 @@ import type {
   QuestionMatchItem,
   QuestionType,
 } from '@assessiq/types';
-import { DIFFICULTIES, QUESTION_TYPES } from '@assessiq/types';
+import { DIFFICULTIES, QUESTION_TYPES, supportedRolePresets } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
 import { assessmentsApi } from '../../api/assessments.api';
 import { studyApi } from '../../api/study.api';
@@ -151,6 +151,7 @@ export default function AssessmentBuilderPage() {
   const [decodeError, setDecodeError] = useState<string | null>(null);
 
   // ── Position input ─────────────────────────────────────────────────────────
+  const [role, setRole] = useState('');
   const [tech, setTech] = useState<string[]>([]);
   const [techDraft, setTechDraft] = useState('');
   const [seniority, setSeniority] = useState<Difficulty | ''>('');
@@ -191,12 +192,37 @@ export default function AssessmentBuilderPage() {
       .catch(() => setTopicHints([]));
   }, []);
 
+  // Only offer roles the bank can actually serve — an unservable role in the
+  // dropdown just recreates the empty-results problem.
+  const roles = useMemo(() => supportedRolePresets(topicHints), [topicHints]);
+
   const addTech = (value: string) => {
     const v = value.trim().replace(/,$/, '');
     if (!v) return;
     setTech((prev) => (prev.some((t) => t.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]));
     setTechDraft('');
   };
+
+  // Picking a role pre-fills its expected topics. It replaces rather than
+  // appends so switching roles doesn't silently accumulate the previous one's
+  // topics; everything stays editable afterwards.
+  const pickRole = (label: string) => {
+    setRole(label);
+    const preset = roles.find((r) => r.label === label);
+    if (preset) setTech(preset.topics);
+  };
+
+  // Type-ahead over real bank topics, minus what's already added. Free text is
+  // still allowed — a technology we have no questions for is a valid thing to
+  // type, it just won't match anything until Stage B.
+  const techSuggestions = useMemo(() => {
+    const chosen = new Set(tech.map((t) => t.toLowerCase()));
+    const q = techDraft.trim().toLowerCase();
+    return topicHints
+      .filter((h) => !chosen.has(h.toLowerCase()))
+      .filter((h) => !q || h.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [topicHints, tech, techDraft]);
 
   const toggleType = (t: QuestionType) =>
     setTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
@@ -213,12 +239,22 @@ export default function AssessmentBuilderPage() {
       const d = await studyApi.decodeJd(jdText);
       setDecoded(d);
       if (!d.matched) return; // nothing worth filling — don't write garbage
-      setTech(
-        d.topics
-          .filter((t) => t.weight !== 'Low')
-          .slice(0, MAX_AUTOFILL_TOPICS)
-          .map((t) => t.topic),
-      );
+      const strong = d.topics.filter((t) => t.weight !== 'Low').map((t) => t.topic);
+      setTech(strong.slice(0, MAX_AUTOFILL_TOPICS));
+
+      // Pick the role whose expected topics overlap the decode most. Set it
+      // directly rather than through pickRole, so it labels the position
+      // without overwriting the chips we just took from the JD. Requires two
+      // overlapping topics — one is too weak a signal to guess a role from.
+      const decodedSet = new Set(strong.map((t) => t.toLowerCase()));
+      const best = roles
+        .map((r) => ({
+          label: r.label,
+          overlap: r.topics.filter((t) => decodedSet.has(t.toLowerCase())).length,
+        }))
+        .sort((a, b) => b.overlap - a.overlap)[0];
+      if (best && best.overlap >= 2) setRole(best.label);
+
       const inferred = seniorityFromRole(d.role_title);
       if (inferred) setSeniority(inferred);
     } catch (e) {
@@ -392,7 +428,10 @@ export default function AssessmentBuilderPage() {
           </Card>
 
           {decoded && !decoded.matched && (
-            <NoMatchNotice hint="We couldn't map this job description to any topic we have questions for, so the fields below were left alone. Fill them in manually, or try a backend-engineering role." />
+            <NoMatchNotice
+              detectedDomain={decoded.detected_domain}
+              action="You can enter the position details manually below, or try a tech role like backend engineering."
+            />
           )}
 
           {/* Position input */}
@@ -405,9 +444,34 @@ export default function AssessmentBuilderPage() {
             </CardHeader>
             <CardBody className="space-y-4">
               <div>
-                <Label>Technology / topic *</Label>
+                <Label>Title / role</Label>
                 <Input
-                  placeholder="Type a technology and press Enter — e.g. Node.js"
+                  list="assessiq-roles"
+                  placeholder="Select or type a role — e.g. Backend Engineer"
+                  value={role}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setRole(v);
+                    // Fill topics only on an exact preset hit, so typing a
+                    // free-text title never clobbers the chips mid-keystroke.
+                    if (roles.some((r) => r.label === v)) pickRole(v);
+                  }}
+                />
+                <datalist id="assessiq-roles">
+                  {roles.map((r) => (
+                    <option key={r.label} value={r.label} />
+                  ))}
+                </datalist>
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Only roles we have questions for are listed. Picking one fills the technologies
+                  below.
+                </p>
+              </div>
+
+              <div>
+                <Label>Technologies *</Label>
+                <Input
+                  placeholder="Type a technology and press Enter — e.g. Node.js, Kafka"
                   value={techDraft}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -433,18 +497,22 @@ export default function AssessmentBuilderPage() {
                     ))}
                   </div>
                 )}
-                {topicHints.length > 0 && (
+                {techSuggestions.length > 0 && (
                   <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                    <span className="text-xs text-slate-400">In the bank:</span>
-                    {topicHints
-                      .filter((h) => !tech.some((t) => t.toLowerCase() === h.toLowerCase()))
-                      .map((h) => (
-                        <Chip key={h} onClick={() => addTech(h)}>
-                          {h}
-                        </Chip>
-                      ))}
+                    <span className="text-xs text-slate-400">
+                      {techDraft.trim() ? 'In the bank, matching:' : 'In the bank:'}
+                    </span>
+                    {techSuggestions.map((h) => (
+                      <Chip key={h} onClick={() => addTech(h)}>
+                        {h}
+                      </Chip>
+                    ))}
                   </div>
                 )}
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Anything can be added — technologies we have no questions for yet simply won't
+                  match.
+                </p>
               </div>
 
               <div className="grid sm:grid-cols-2 gap-4">

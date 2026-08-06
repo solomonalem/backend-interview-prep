@@ -6,17 +6,24 @@ import { Card, EmptyState } from './ui';
  * question bank. Deliberately explicit: the alternative is a table of grey
  * "Low" rows that reads as a broken screen.
  */
-export function NoMatchNotice({ hint }: { hint?: string }) {
+export function NoMatchNotice({
+  detectedDomain,
+  action = 'Try a tech role like backend engineering.',
+}: {
+  detectedDomain?: string | null;
+  /** Trailing sentence — differs between the job-seeker screen and the builder. */
+  action?: string;
+}) {
+  // Name the discipline when the decoder identified one. Saying "this looks
+  // like a civil engineering role" is far more useful than a generic no-match,
+  // and it makes the scope limit legible rather than looking like a failure.
+  const hint = detectedDomain
+    ? `AssessIQ currently supports technology and IT roles only. This looks like a ${detectedDomain} role, which we don't cover yet. ${action}`
+    : `AssessIQ currently supports technology and IT roles only — we couldn't map this to a role we cover. ${action}`;
+
   return (
     <Card className="animate-fade-in">
-      <EmptyState
-        icon={<SearchX size={22} />}
-        title="This job description doesn't overlap our question bank yet"
-        hint={
-          hint ??
-          "We couldn't map it to any topic we have questions for. Try a backend-engineering role, or check back as the bank grows."
-        }
-      />
+      <EmptyState icon={<SearchX size={22} />} title="Outside what AssessIQ covers" hint={hint} />
     </Card>
   );
 }
