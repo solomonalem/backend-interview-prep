@@ -26,7 +26,6 @@ const weightTone: Record<JdWeight, 'rose' | 'amber' | 'violet' | 'slate'> = {
 
 export default function OnboardingPage() {
   const [jd, setJd] = useState('');
-  const [resume, setResume] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DecodeJdResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,18 +76,10 @@ export default function OnboardingPage() {
               onChange={(e) => setJd(e.target.value)}
             />
           </div>
-          <div>
-            <Label>Your resume or key bullets (optional)</Label>
-            <Textarea
-              rows={4}
-              placeholder="Paste a few resume bullets so we can tailor to your experience…"
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
-            />
-          </div>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <p className="flex items-center gap-1.5 text-xs text-slate-400">
-              <FileText size={13} /> We analyze the description to weight your plan.
+              <FileText size={13} className="shrink-0" />
+              Sent to our server and an AI provider to decode it. We don't store it.
             </p>
             <Button onClick={run} disabled={!jd.trim() || loading}>
               {loading ? (
