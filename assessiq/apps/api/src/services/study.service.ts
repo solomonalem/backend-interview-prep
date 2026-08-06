@@ -235,14 +235,52 @@ function detectDomain(jd: string): string | null {
 }
 
 
+// Words every engineering discipline uses. On their own they say nothing about
+// software — this is how a civil JD's "site design" plus "stormwater management
+// system" added up to a match on "System Design".
+const GENERIC_TOKENS = new Set([
+  'system',
+  'systems',
+  'design',
+  'development',
+  'engineering',
+  'service',
+  'services',
+  'analysis',
+  'management',
+  'testing',
+  'test',
+  'data',
+  'application',
+  'applications',
+  'platform',
+  'architecture',
+  'integration',
+  'support',
+  'quality',
+  'construction',
+  'project',
+]);
+
+const hasWord = (lc: string, token: string) =>
+  new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lc);
+
 function weightFor(topic: string, lc: string): JdWeight {
   const tokens = topic.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
-  const hit = tokens.some((t) => lc.includes(t));
-  // A topic the JD never mentions is 'Low', not 'Differentiator'. This keeps
-  // the two engines on the same scale so `matched` means the same thing in
-  // both — previously the heuristic rated every unmatched topic above Low and
-  // could never report a no-match.
-  return hit ? 'Critical' : 'Low';
+  if (tokens.length === 0) return 'Low';
+  // Whole words only, and every token must be present — substring matching on
+  // any single token let "rest" hit "restoration" and "design" carry the whole
+  // of "System Design".
+  if (!tokens.every((t) => hasWord(lc, t))) return 'Low';
+  // At least one token must be distinctive to software. A topic built entirely
+  // from generic words (e.g. "System Design") can no longer be claimed on
+  // wording alone: with no AI available there is no way to tell the software
+  // skill from "drainage system design", and a false match is worse than a
+  // missed one on a fallback path.
+  if (!tokens.some((t) => !GENERIC_TOKENS.has(t))) return 'Low';
+  // A topic the JD never mentions is 'Low', not 'Differentiator', so `matched`
+  // means the same thing whichever engine answered.
+  return 'Critical';
 }
 
 const WEIGHT_ORDER: Record<JdWeight, number> = { Critical: 0, High: 1, Differentiator: 2, Low: 3 };
