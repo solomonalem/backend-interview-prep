@@ -13,6 +13,7 @@ import {
   Spinner,
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
+import { HeuristicNote, NoMatchNotice } from '../../components/DecodeNotices';
 import { studyApi } from '../../api/study.api';
 import { ApiRequestError } from '../../api/client';
 import type { DecodeJdResponse, JdWeight } from '@assessiq/types';
@@ -102,8 +103,11 @@ export default function OnboardingPage() {
         </CardBody>
       </Card>
 
-      {result && (
+      {result && !result.matched && <NoMatchNotice />}
+
+      {result?.matched && (
         <div className="animate-fade-in space-y-6">
+          {result.source === 'heuristic' && <HeuristicNote />}
           <Card>
             <CardHeader>
               <div className="flex items-center gap-3">
