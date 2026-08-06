@@ -103,7 +103,12 @@ export default function OnboardingPage() {
         </CardBody>
       </Card>
 
-      {result && !result.matched && <NoMatchNotice />}
+      {result && !result.matched && (
+        <NoMatchNotice
+          detectedDomain={result.detected_domain}
+          action="Try a tech role like backend engineering."
+        />
+      )}
 
       {result?.matched && (
         <div className="animate-fade-in space-y-6">
