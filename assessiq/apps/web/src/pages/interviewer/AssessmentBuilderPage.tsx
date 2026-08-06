@@ -1,10 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Check, ArrowRight, Timer, ShieldCheck, ClipboardList, Sparkles } from 'lucide-react';
-import type { CreateAssessmentRequest, QuestionListItem } from '@assessiq/types';
+import {
+  Search,
+  ArrowRight,
+  Timer,
+  ShieldCheck,
+  ClipboardList,
+  Sparkles,
+  Briefcase,
+  X,
+  Layers,
+} from 'lucide-react';
+import type {
+  CreateAssessmentRequest,
+  Difficulty,
+  QuestionMatchItem,
+  QuestionType,
+} from '@assessiq/types';
+import { DIFFICULTIES, QUESTION_TYPES } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
 import { assessmentsApi } from '../../api/assessments.api';
 import { ApiRequestError } from '../../api/client';
+import { QuestionCard } from '../../components/QuestionCard';
 import {
   Badge,
   Button,
@@ -12,10 +29,11 @@ import {
   CardBody,
   CardHeader,
   Input,
+  Label,
+  Select,
   PageHeader,
   Spinner,
   EmptyState,
-  difficultyTone,
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
 
@@ -55,15 +73,73 @@ function Toggle({
   );
 }
 
+function Chip({
+  children,
+  onRemove,
+  onClick,
+  active,
+}: {
+  children: React.ReactNode;
+  onRemove?: () => void;
+  onClick?: () => void;
+  active?: boolean;
+}) {
+  const base =
+    'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors';
+  if (onRemove) {
+    return (
+      <span className={cn(base, 'border-brand-200 bg-brand-soft text-brand-700')}>
+        {children}
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${String(children)}`}
+          className="text-brand-400 hover:text-brand-700"
+        >
+          <X size={12} strokeWidth={3} />
+        </button>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        base,
+        active
+          ? 'border-brand-300 bg-brand-soft text-brand-700'
+          : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function AssessmentBuilderPage() {
   const navigate = useNavigate();
-  const [questions, setQuestions] = useState<QuestionListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [title, setTitle] = useState('');
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Config
+  // ── Position input ─────────────────────────────────────────────────────────
+  const [tech, setTech] = useState<string[]>([]);
+  const [techDraft, setTechDraft] = useState('');
+  const [seniority, setSeniority] = useState<Difficulty | ''>('');
+  const [types, setTypes] = useState<QuestionType[]>([]);
+  const [topicHints, setTopicHints] = useState<string[]>([]);
+
+  // ── Results ────────────────────────────────────────────────────────────────
+  const [results, setResults] = useState<QuestionMatchItem[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  // ── Selection tray — the single source of truth for the assessment.
+  // A Map keeps insertion order, so question_ids are ordered as selected.
+  // Nothing is ever added here except by an explicit click.
+  const [tray, setTray] = useState<Map<string, QuestionMatchItem>>(new Map());
+
+  const [title, setTitle] = useState('');
+
+  // ── Config ─────────────────────────────────────────────────────────────────
   const [timerOn, setTimerOn] = useState(true);
   const [minutes, setMinutes] = useState(45);
   const [trackTabs, setTrackTabs] = useState(true);
@@ -76,38 +152,79 @@ export default function AssessmentBuilderPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Topic suggestions, so the manager can see what the bank actually covers
+  // instead of guessing at free text.
   useEffect(() => {
-    setLoading(true);
-    const t = setTimeout(() => {
-      questionsApi
-        .list({ search: search || undefined, limit: 100 })
-        .then((r) => setQuestions(r.questions))
-        .finally(() => setLoading(false));
-    }, 150);
-    return () => clearTimeout(t);
-  }, [search]);
+    questionsApi
+      .list({ limit: 100 })
+      .then((r) => setTopicHints([...new Set(r.questions.map((q) => q.topic))]))
+      .catch(() => setTopicHints([]));
+  }, []);
 
-  const proctoringOn = trackTabs || trackFocus || detectPaste || detectIdle;
-  const canSave = title.trim().length > 0 && selected.size > 0 && !saving;
+  const addTech = (value: string) => {
+    const v = value.trim().replace(/,$/, '');
+    if (!v) return;
+    setTech((prev) => (prev.some((t) => t.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]));
+    setTechDraft('');
+  };
 
-  const toggle = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
+  const toggleType = (t: QuestionType) =>
+    setTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+
+  const canSearch = tech.length > 0 && seniority !== '' && !searching;
+
+  const runSearch = async () => {
+    if (!canSearch) return;
+    setSearching(true);
+    setSearchError(null);
+    try {
+      const r = await questionsApi.match({
+        technology: tech,
+        seniority: seniority as Difficulty,
+        ...(types.length ? { type: types } : {}),
+      });
+      setResults(r.questions);
+    } catch (e) {
+      setSearchError(
+        e instanceof ApiRequestError ? e.message : 'Could not search the question bank.',
+      );
+      setResults(null);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Explicit selection only — this is the ONLY path into the tray.
+  const toggleQuestion = (id: string) => {
+    const found = results?.find((q) => q.id === id) ?? tray.get(id);
+    if (!found) return;
+    setTray((prev) => {
+      const next = new Map(prev);
       if (next.has(id)) next.delete(id);
-      else next.add(id);
+      else next.set(id, found);
       return next;
     });
     setError(null);
   };
 
+  const removeFromTray = (id: string) => {
+    setTray((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  const trayItems = useMemo(() => [...tray.values()], [tray]);
+  const canSave = title.trim().length > 0 && tray.size > 0 && !saving;
+
   const save = async () => {
     if (!canSave) return;
     setSaving(true);
     setError(null);
-    // Set preserves click order → question_ids are ordered as selected.
     const body: CreateAssessmentRequest = {
       title: title.trim(),
-      question_ids: Array.from(selected),
+      question_ids: trayItems.map((q) => q.id),
       timer_enabled: timerOn,
       ...(timerOn ? { timer_seconds: minutes * 60 } : {}),
       proctoring_config: {
@@ -128,18 +245,19 @@ export default function AssessmentBuilderPage() {
     }
   };
 
+  const proctoringOn = trackTabs || trackFocus || detectPaste || detectIdle;
   const summary = useMemo(() => {
-    const q = `${selected.size} question${selected.size === 1 ? '' : 's'}`;
+    const q = `${tray.size} question${tray.size === 1 ? '' : 's'}`;
     const t = timerOn ? `${minutes}m timer` : 'no timer';
     const p = proctoringOn ? 'proctoring on' : 'proctoring off';
     return `${q} · ${t} · ${p}`;
-  }, [selected.size, timerOn, minutes, proctoringOn]);
+  }, [tray.size, timerOn, minutes, proctoringOn]);
 
   return (
     <>
       <PageHeader
         title="New Assessment"
-        subtitle="Pick questions, tune proctoring, and generate a shareable candidate link."
+        subtitle="Describe the position, pick the questions you want, then generate a candidate link."
         actions={
           <>
             <Button variant="secondary" onClick={() => navigate('/dashboard')}>
@@ -154,101 +272,207 @@ export default function AssessmentBuilderPage() {
       />
 
       <div className="grid lg:grid-cols-3 gap-6">
-        {/* LEFT — question picker */}
+        {/* LEFT — position input + results */}
         <div className="lg:col-span-2 space-y-4">
           <Card>
             <CardBody className="space-y-3">
-              <div>
-                <Input
-                  placeholder="Assessment title — e.g. Senior Backend — Node"
-                  value={title}
-                  onChange={(e) => {
-                    setTitle(e.target.value);
-                    setError(null);
-                  }}
-                  className="text-[15px] font-medium"
-                />
-              </div>
-              <div className="relative">
-                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <Input
-                  placeholder="Search the question bank…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
+              <Input
+                placeholder="Assessment title — e.g. Senior Backend — Node"
+                value={title}
+                onChange={(e) => {
+                  setTitle(e.target.value);
+                  setError(null);
+                }}
+                className="text-[15px] font-medium"
+              />
             </CardBody>
           </Card>
 
-          <div className="flex items-center justify-between px-1">
-            <p className="text-xs text-slate-400">
-              {loading ? (
-                <span className="inline-flex items-center gap-2">
-                  <Spinner /> Loading…
-                </span>
-              ) : (
-                `${questions.length} question${questions.length === 1 ? '' : 's'}`
-              )}
-            </p>
-            {selected.size > 0 && (
-              <p className="text-xs font-medium text-brand-600">{selected.size} selected</p>
-            )}
-          </div>
+          {/* Position input */}
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <Briefcase size={16} className="text-brand-500" /> The position
+              </h3>
+            </CardHeader>
+            <CardBody className="space-y-4">
+              <div>
+                <Label>Technology / topic *</Label>
+                <Input
+                  placeholder="Type a technology and press Enter — e.g. Node.js"
+                  value={techDraft}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v.endsWith(',')) addTech(v);
+                    else setTechDraft(v);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addTech(techDraft);
+                    } else if (e.key === 'Backspace' && !techDraft && tech.length) {
+                      setTech((prev) => prev.slice(0, -1));
+                    }
+                  }}
+                  onBlur={() => addTech(techDraft)}
+                />
+                {tech.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {tech.map((t) => (
+                      <Chip key={t} onRemove={() => setTech((p) => p.filter((x) => x !== t))}>
+                        {t}
+                      </Chip>
+                    ))}
+                  </div>
+                )}
+                {topicHints.length > 0 && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                    <span className="text-xs text-slate-400">In the bank:</span>
+                    {topicHints
+                      .filter((h) => !tech.some((t) => t.toLowerCase() === h.toLowerCase()))
+                      .map((h) => (
+                        <Chip key={h} onClick={() => addTech(h)}>
+                          {h}
+                        </Chip>
+                      ))}
+                  </div>
+                )}
+              </div>
 
-          {!loading && questions.length === 0 ? (
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <Label>Seniority *</Label>
+                  <Select
+                    value={seniority}
+                    onChange={(e) => setSeniority(e.target.value as Difficulty | '')}
+                  >
+                    <option value="">Select seniority…</option>
+                    {DIFFICULTIES.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div>
+                  <Label>Question type (optional)</Label>
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {QUESTION_TYPES.map((t) => (
+                      <Chip key={t} active={types.includes(t)} onClick={() => toggleType(t)}>
+                        {t}
+                      </Chip>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 pt-1">
+                <p className="text-xs text-slate-400">
+                  We match loosely — questions matching only some of these still appear, ranked lower.
+                </p>
+                <Button onClick={runSearch} disabled={!canSearch}>
+                  {searching ? (
+                    <Spinner className="border-white/40 border-t-white" />
+                  ) : (
+                    <Search size={16} />
+                  )}
+                  {searching ? 'Searching…' : 'Find questions'}
+                </Button>
+              </div>
+              {searchError && (
+                <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
+                  {searchError}
+                </p>
+              )}
+            </CardBody>
+          </Card>
+
+          {/* Results */}
+          {results === null ? (
+            <Card>
+              <EmptyState
+                icon={<Briefcase size={22} />}
+                title="Describe the position to start"
+                hint="Add a technology and pick a seniority, then search the bank for matching questions."
+              />
+            </Card>
+          ) : results.length === 0 ? (
             <Card>
               <EmptyState
                 icon={<ClipboardList size={22} />}
-                title="No questions match"
-                hint="Try a different search term to find questions to add."
+                title="No questions matched"
+                hint="Try a different technology or seniority — the bank may not cover this area yet."
               />
             </Card>
           ) : (
-            <div className="space-y-2.5">
-              {questions.map((q) => {
-                const on = selected.has(q.id);
-                return (
-                  <Card
+            <>
+              <div className="flex items-center justify-between px-1">
+                <p className="text-xs text-slate-400">
+                  {results.length} match{results.length === 1 ? '' : 'es'}, best first
+                </p>
+                {tray.size > 0 && (
+                  <p className="text-xs font-medium text-brand-600">{tray.size} in this assessment</p>
+                )}
+              </div>
+              <div className="space-y-2.5">
+                {results.map((q) => (
+                  <QuestionCard
                     key={q.id}
-                    hover={!on}
-                    className={cn(
-                      'cursor-pointer transition-shadow',
-                      on && 'ring-2 ring-brand-300 shadow-glow',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => toggle(q.id)}
-                      className="w-full text-left px-5 py-4 flex items-start gap-4"
-                    >
-                      <span
-                        className={cn(
-                          'mt-0.5 h-5 w-5 shrink-0 rounded-md border flex items-center justify-center transition-colors',
-                          on ? 'bg-brand-500 border-brand-500 text-white' : 'border-slate-300 bg-white',
-                        )}
-                      >
-                        {on && <Check size={13} strokeWidth={3} />}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[15px] font-medium text-slate-800 leading-snug">{q.text}</p>
-                        <div className="mt-2.5 flex flex-wrap gap-1.5">
-                          <Badge tone="brand">{q.topic}</Badge>
-                          <Badge tone={difficultyTone[q.difficulty] ?? 'slate'}>{q.difficulty}</Badge>
-                          <Badge tone="slate">{q.type}</Badge>
-                          {q.domain && <Badge tone="violet">{q.domain}</Badge>}
-                        </div>
-                      </div>
-                    </button>
-                  </Card>
-                );
-              })}
-            </div>
+                    question={q}
+                    selected={tray.has(q.id)}
+                    onToggle={toggleQuestion}
+                    matchedOn={q.matched_on}
+                  />
+                ))}
+              </div>
+            </>
           )}
         </div>
 
-        {/* RIGHT — config panel */}
+        {/* RIGHT — tray + config */}
         <div className="space-y-6">
+          {/* Selection tray */}
+          <Card className={cn(tray.size > 0 && 'ring-1 ring-brand-200')}>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <Layers size={16} className="text-brand-500" /> Questions in this assessment
+              </h3>
+              <Badge tone={tray.size > 0 ? 'brand' : 'slate'}>{tray.size}</Badge>
+            </CardHeader>
+            <CardBody className="space-y-2">
+              {tray.size === 0 ? (
+                <p className="text-xs text-slate-400">
+                  Nothing added yet. Select questions from the results — nothing is added for you.
+                </p>
+              ) : (
+                trayItems.map((q, i) => (
+                  <div
+                    key={q.id}
+                    className="flex items-start gap-2.5 rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2.5"
+                  >
+                    <span className="mt-0.5 text-xs font-semibold text-slate-400 tabular w-4 shrink-0">
+                      {i + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-slate-700 leading-snug line-clamp-2">{q.text}</p>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {q.topic} · {q.difficulty}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeFromTray(q.id)}
+                      aria-label="Remove from assessment"
+                      className="mt-0.5 shrink-0 text-slate-300 hover:text-rose-500 transition-colors"
+                    >
+                      <X size={14} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </CardBody>
+          </Card>
+
           <Card>
             <CardHeader>
               <h3 className="flex items-center gap-2 font-semibold text-slate-800">
@@ -259,9 +483,7 @@ export default function AssessmentBuilderPage() {
               <Toggle checked={timerOn} onChange={setTimerOn} label="Enable timer" />
               {timerOn && (
                 <div className="animate-fade-in">
-                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">
-                    Time limit (minutes)
-                  </label>
+                  <Label>Time limit (minutes)</Label>
                   <Input
                     type="number"
                     min={5}
@@ -287,9 +509,7 @@ export default function AssessmentBuilderPage() {
               <Toggle checked={detectPaste} onChange={setDetectPaste} label="Detect paste" />
               <Toggle checked={detectIdle} onChange={setDetectIdle} label="Detect idle" />
               <div className="pt-1">
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">
-                  Flag threshold
-                </label>
+                <Label>Flag threshold</Label>
                 <Input
                   type="number"
                   min={1}
@@ -320,7 +540,6 @@ export default function AssessmentBuilderPage() {
             </CardBody>
           </Card>
 
-          {/* Summary + create */}
           <Card className="bg-brand-soft border-brand-100">
             <CardBody className="space-y-3">
               <p className="text-sm font-semibold text-slate-800">Summary</p>
