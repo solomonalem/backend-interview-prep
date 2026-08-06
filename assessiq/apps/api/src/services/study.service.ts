@@ -234,14 +234,53 @@ function detectDomain(jd: string): string | null {
   return null;
 }
 
+
+// Words every engineering discipline uses. On their own they say nothing about
+// software — this is how a civil JD's "site design" plus "stormwater management
+// system" added up to a match on "System Design".
+const GENERIC_TOKENS = new Set([
+  'system',
+  'systems',
+  'design',
+  'development',
+  'engineering',
+  'service',
+  'services',
+  'analysis',
+  'management',
+  'testing',
+  'test',
+  'data',
+  'application',
+  'applications',
+  'platform',
+  'architecture',
+  'integration',
+  'support',
+  'quality',
+  'construction',
+  'project',
+]);
+
+const hasWord = (lc: string, token: string) =>
+  new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lc);
+
 function weightFor(topic: string, lc: string): JdWeight {
   const tokens = topic.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
-  const hit = tokens.some((t) => lc.includes(t));
-  // A topic the JD never mentions is 'Low', not 'Differentiator'. This keeps
-  // the two engines on the same scale so `matched` means the same thing in
-  // both — previously the heuristic rated every unmatched topic above Low and
-  // could never report a no-match.
-  return hit ? 'Critical' : 'Low';
+  if (tokens.length === 0) return 'Low';
+  // Whole words only, and every token must be present — substring matching on
+  // any single token let "rest" hit "restoration" and "design" carry the whole
+  // of "System Design".
+  if (!tokens.every((t) => hasWord(lc, t))) return 'Low';
+  // At least one token must be distinctive to software. A topic built entirely
+  // from generic words (e.g. "System Design") can no longer be claimed on
+  // wording alone: with no AI available there is no way to tell the software
+  // skill from "drainage system design", and a false match is worse than a
+  // missed one on a fallback path.
+  if (!tokens.some((t) => !GENERIC_TOKENS.has(t))) return 'Low';
+  // A topic the JD never mentions is 'Low', not 'Differentiator', so `matched`
+  // means the same thing whichever engine answered.
+  return 'Critical';
 }
 
 const WEIGHT_ORDER: Record<JdWeight, number> = { Critical: 0, High: 1, Differentiator: 2, Low: 3 };
@@ -279,21 +318,60 @@ function decodeJdHeuristic(jdText: string, counts: Map<string, number>): DecodeJ
 async function decodeJdClaude(jdText: string, counts: Map<string, number>): Promise<DecodeJdResponse> {
   const known = [...counts.keys()];
   const system =
-    'You analyze a technical job description and classify how central each known topic is. Return ONLY a JSON object, no prose, no markdown.';
-  const user = `Known topics (use only these): ${JSON.stringify(known)}
-
-Job description:
+    'You screen job descriptions for a SOFTWARE ENGINEERING interview question bank. Return ONLY a JSON object, no prose, no markdown.';
+  const user = `Job description:
 ${jdText}
 
+STEP 1 — Is this a software/technology engineering role?
+Software roles include: backend, frontend, full-stack, mobile, data, platform,
+infrastructure, SRE/DevOps, ML/AI engineering, security engineering, QA
+automation, and engineering management of those.
+NOT software roles: civil, structural, mechanical, electrical, chemical,
+industrial, environmental, aerospace and biomedical engineering; construction;
+architecture (buildings); and every non-engineering field (nursing, teaching,
+marketing, sales, finance, HR, legal, operations).
+
+Judge the ROLE, not the vocabulary. Other disciplines use the same words
+software does — "engineer", "design", "development", "system", "architecture",
+"analysis", "testing", "platform", "infrastructure". A civil engineer doing
+"site design", "land development" and "stormwater system design" is NOT a
+software role.
+
+If it is NOT a software role, return exactly this and stop:
+{"is_software_role": false, "role_title": "<short role title>", "domain": null, "topics": []}
+
+STEP 2 — Only if it IS a software role.
+Known topics (use only these): ${JSON.stringify(known)}
+
+Include a topic ONLY if the role genuinely requires it as a software
+competency. Match on meaning, never on a shared word:
+- "site design" / "land development" → NOT "System Design"
+- "drainage analysis" / "root cause of erosion" → NOT "RCA"
+- "structural engineering" → NOT any software topic
+Omit any topic you are unsure about. Returning fewer, correct topics is better
+than padding the list.
+
 Return exactly:
-{"role_title": "<short role title>", "domain": "healthcare"|"fintech"|"general", "topics": [{"topic": "<one known topic>", "weight": "Critical"|"High"|"Differentiator"|"Low"}]}
-Weight every topic that is at all relevant. Critical = core to the role, High = important, Differentiator = nice-to-have edge, Low = barely mentioned.`;
+{"is_software_role": true, "role_title": "<short role title>", "domain": "healthcare"|"fintech"|"general", "topics": [{"topic": "<one known topic>", "weight": "Critical"|"High"|"Differentiator"|"Low"}]}
+Critical = core to the role, High = important, Differentiator = nice-to-have edge, Low = barely mentioned.`;
 
   const parsed = await callModelJSON<{
+    is_software_role?: boolean;
     role_title?: string;
     domain?: string | null;
     topics?: { topic: string; weight: JdWeight }[];
   }>(DECODE_MODEL, system, user);
+
+  // Domain gate. Only an explicit `false` blocks: if the model omits the field
+  // we fall through to topic matching, because wrongly telling a real backend
+  // role "no match" is a worse failure than the noise we are removing.
+  if (parsed.is_software_role === false) {
+    return finalizeDecode(
+      { role_title: (parsed.role_title || 'Unknown role').slice(0, 80), domain: null },
+      [],
+      'ai',
+    );
+  }
 
   const byTopic = new Map<string, JdWeight>();
   for (const t of parsed.topics ?? []) {
