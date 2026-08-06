@@ -234,6 +234,7 @@ function detectDomain(jd: string): string | null {
   return null;
 }
 
+
 function weightFor(topic: string, lc: string): JdWeight {
   const tokens = topic.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
   const hit = tokens.some((t) => lc.includes(t));
@@ -279,21 +280,60 @@ function decodeJdHeuristic(jdText: string, counts: Map<string, number>): DecodeJ
 async function decodeJdClaude(jdText: string, counts: Map<string, number>): Promise<DecodeJdResponse> {
   const known = [...counts.keys()];
   const system =
-    'You analyze a technical job description and classify how central each known topic is. Return ONLY a JSON object, no prose, no markdown.';
-  const user = `Known topics (use only these): ${JSON.stringify(known)}
-
-Job description:
+    'You screen job descriptions for a SOFTWARE ENGINEERING interview question bank. Return ONLY a JSON object, no prose, no markdown.';
+  const user = `Job description:
 ${jdText}
 
+STEP 1 — Is this a software/technology engineering role?
+Software roles include: backend, frontend, full-stack, mobile, data, platform,
+infrastructure, SRE/DevOps, ML/AI engineering, security engineering, QA
+automation, and engineering management of those.
+NOT software roles: civil, structural, mechanical, electrical, chemical,
+industrial, environmental, aerospace and biomedical engineering; construction;
+architecture (buildings); and every non-engineering field (nursing, teaching,
+marketing, sales, finance, HR, legal, operations).
+
+Judge the ROLE, not the vocabulary. Other disciplines use the same words
+software does — "engineer", "design", "development", "system", "architecture",
+"analysis", "testing", "platform", "infrastructure". A civil engineer doing
+"site design", "land development" and "stormwater system design" is NOT a
+software role.
+
+If it is NOT a software role, return exactly this and stop:
+{"is_software_role": false, "role_title": "<short role title>", "domain": null, "topics": []}
+
+STEP 2 — Only if it IS a software role.
+Known topics (use only these): ${JSON.stringify(known)}
+
+Include a topic ONLY if the role genuinely requires it as a software
+competency. Match on meaning, never on a shared word:
+- "site design" / "land development" → NOT "System Design"
+- "drainage analysis" / "root cause of erosion" → NOT "RCA"
+- "structural engineering" → NOT any software topic
+Omit any topic you are unsure about. Returning fewer, correct topics is better
+than padding the list.
+
 Return exactly:
-{"role_title": "<short role title>", "domain": "healthcare"|"fintech"|"general", "topics": [{"topic": "<one known topic>", "weight": "Critical"|"High"|"Differentiator"|"Low"}]}
-Weight every topic that is at all relevant. Critical = core to the role, High = important, Differentiator = nice-to-have edge, Low = barely mentioned.`;
+{"is_software_role": true, "role_title": "<short role title>", "domain": "healthcare"|"fintech"|"general", "topics": [{"topic": "<one known topic>", "weight": "Critical"|"High"|"Differentiator"|"Low"}]}
+Critical = core to the role, High = important, Differentiator = nice-to-have edge, Low = barely mentioned.`;
 
   const parsed = await callModelJSON<{
+    is_software_role?: boolean;
     role_title?: string;
     domain?: string | null;
     topics?: { topic: string; weight: JdWeight }[];
   }>(DECODE_MODEL, system, user);
+
+  // Domain gate. Only an explicit `false` blocks: if the model omits the field
+  // we fall through to topic matching, because wrongly telling a real backend
+  // role "no match" is a worse failure than the noise we are removing.
+  if (parsed.is_software_role === false) {
+    return finalizeDecode(
+      { role_title: (parsed.role_title || 'Unknown role').slice(0, 80), domain: null },
+      [],
+      'ai',
+    );
+  }
 
   const byTopic = new Map<string, JdWeight>();
   for (const t of parsed.topics ?? []) {
