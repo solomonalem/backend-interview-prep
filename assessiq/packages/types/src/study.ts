@@ -69,9 +69,18 @@ export type JdWeight = 'Critical' | 'High' | 'Differentiator' | 'Low';
 export interface DecodeJdRequest {
   jd_text: string;
 }
+// Which engine produced the decode. A heuristic result is a degraded result —
+// it must never be indistinguishable from a real one.
+export type DecodeJdSource = 'ai' | 'heuristic';
+
 export interface DecodeJdResponse {
   role_title: string;
   domain: string | null;
+  // false when nothing in the bank rose above 'Low' — the JD does not overlap
+  // our question bank. `topics` is empty in that case rather than a wall of
+  // meaningless 'Low' rows.
+  matched: boolean;
+  source: DecodeJdSource;
   topics: { topic: string; weight: JdWeight; question_count: number }[];
 }
 
