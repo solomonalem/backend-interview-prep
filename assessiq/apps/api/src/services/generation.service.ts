@@ -308,6 +308,17 @@ async function loadDraft(id: string, interviewerId: string) {
 }
 
 /**
+ * Load a draft with its full rubric for review. Separate from GET /questions/:id,
+ * which deliberately never returns the private `_guide` columns.
+ */
+export async function getDraftForReview(
+  id: string,
+  interviewerId: string,
+): Promise<QuestionDraft> {
+  return loadDraft(id, interviewerId);
+}
+
+/**
  * Refine an existing draft in place: keep what works, change what the manager
  * asked for. Deliberately not a regenerate — the model is given the current
  * draft and told to revise it, so the result stays recognisably the same

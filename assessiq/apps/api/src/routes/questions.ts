@@ -8,6 +8,7 @@ import {
   buildQuestionPool,
   draftRubricForQuestion,
   generateQuestions,
+  getDraftForReview,
   refineDraft,
   rejectDraft,
 } from '../services/generation.service.js';
@@ -137,6 +138,19 @@ questionsRouter.post(
       throw new AppError(400, 'VALIDATION', 'text, topic and seniority are required');
     }
     res.status(201).json(await draftRubricForQuestion(parsed.data, req.interviewer!.id));
+  }),
+);
+
+// GET /questions/:id/draft — full draft incl. the private _guide rubric, for
+// the owning interviewer to review. Distinct from GET /questions/:id, which
+// must never expose those columns.
+questionsRouter.get(
+  '/:id/draft',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'question id is required');
+    res.json(await getDraftForReview(id, req.interviewer!.id));
   }),
 );
 

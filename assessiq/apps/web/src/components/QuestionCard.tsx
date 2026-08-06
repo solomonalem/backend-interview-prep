@@ -1,4 +1,4 @@
-import { Check, Plus } from 'lucide-react';
+import { Check, Plus, Sparkles } from 'lucide-react';
 import type { QuestionListItem, QuestionMatchKey } from '@assessiq/types';
 import { Badge, Card, difficultyTone } from './ui';
 import { cn } from '../lib/cn';
@@ -56,6 +56,11 @@ export function QuestionCard({
           {selected ? <Check size={13} strokeWidth={3} /> : <Plus size={13} className="text-slate-400" />}
         </span>
         <div className="flex-1 min-w-0">
+          {question.status === 'draft' && (
+            <p className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
+              <Sparkles size={11} /> AI-generated — review before use
+            </p>
+          )}
           <p className="text-[15px] font-medium text-slate-800 leading-snug">{question.text}</p>
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             <Badge tone="brand">{question.topic}</Badge>

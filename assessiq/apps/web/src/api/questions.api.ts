@@ -1,8 +1,16 @@
 import type {
+  ApproveQuestionRequest,
+  DraftRubricRequest,
+  GenerateQuestionsRequest,
+  GenerateQuestionsResponse,
+  QuestionDraft,
   QuestionFilters,
   QuestionListResponse,
   QuestionMatchFilters,
   QuestionMatchResponse,
+  QuestionPoolRequest,
+  QuestionPoolResponse,
+  RefineQuestionRequest,
 } from '@assessiq/types';
 import { api } from './client';
 
@@ -28,4 +36,26 @@ export const questionsApi = {
     if (f.limit) p.set('limit', String(f.limit));
     return api.get<QuestionMatchResponse>(`/questions/match?${p.toString()}`);
   },
+
+  // ── Stage B ────────────────────────────────────────────────────────────────
+  // Bank matches topped up with generated drafts. Slow on a cold bank — every
+  // shortfall costs a Claude call.
+  pool: (body: QuestionPoolRequest) => api.post<QuestionPoolResponse>('/questions/pool', body),
+
+  generate: (body: GenerateQuestionsRequest) =>
+    api.post<GenerateQuestionsResponse>('/questions/generate', body),
+
+  // Manager writes the question, AI drafts its rubric. Same review flow.
+  draftRubric: (body: DraftRubricRequest) => api.post<QuestionDraft>('/questions/draft-rubric', body),
+
+  // Full draft incl. the private _guide rubric — interviewer-only, for review.
+  refine: (id: string, body: RefineQuestionRequest) =>
+    api.post<QuestionDraft>(`/questions/${id}/refine`, body),
+
+  approve: (id: string, edits: ApproveQuestionRequest = {}) =>
+    api.post<QuestionDraft>(`/questions/${id}/approve`, edits),
+
+  getDraft: (id: string) => api.get<QuestionDraft>(`/questions/${id}/draft`),
+
+  reject: (id: string) => api.post<null>(`/questions/${id}/reject`),
 };
