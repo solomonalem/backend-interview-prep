@@ -291,12 +291,18 @@ type DecodedTopics = { topic: string; weight: JdWeight; question_count: number }
 // JD does not overlap the bank, and returning the full all-'Low' table reads as
 // a broken result — so drop it and let the caller say so plainly.
 function finalizeDecode(
-  base: { role_title: string; domain: string | null },
+  base: { role_title: string; domain: string | null; detected_domain?: string | null },
   topics: DecodedTopics,
   source: DecodeJdSource,
 ): DecodeJdResponse {
   const matched = topics.some((t) => t.weight !== 'Low');
-  return { ...base, matched, source, topics: matched ? topics : [] };
+  return {
+    ...base,
+    detected_domain: base.detected_domain ?? null,
+    matched,
+    source,
+    topics: matched ? topics : [],
+  };
 }
 
 function decodeJdHeuristic(jdText: string, counts: Map<string, number>): DecodeJdResponse {
@@ -338,7 +344,8 @@ software does — "engineer", "design", "development", "system", "architecture",
 software role.
 
 If it is NOT a software role, return exactly this and stop:
-{"is_software_role": false, "role_title": "<short role title>", "domain": null, "topics": []}
+{"is_software_role": false, "role_title": "<short role title>", "detected_domain": "<the field this role belongs to, lowercase, 1-3 words: e.g. civil engineering, mechanical engineering, nursing, marketing, accounting>", "domain": null, "topics": []}
+Use null for detected_domain only if the field is genuinely unclear.
 
 STEP 2 — Only if it IS a software role.
 Known topics (use only these): ${JSON.stringify(known)}
@@ -358,6 +365,7 @@ Critical = core to the role, High = important, Differentiator = nice-to-have edg
   const parsed = await callModelJSON<{
     is_software_role?: boolean;
     role_title?: string;
+    detected_domain?: string | null;
     domain?: string | null;
     topics?: { topic: string; weight: JdWeight }[];
   }>(DECODE_MODEL, system, user);
@@ -366,8 +374,16 @@ Critical = core to the role, High = important, Differentiator = nice-to-have edg
   // we fall through to topic matching, because wrongly telling a real backend
   // role "no match" is a worse failure than the noise we are removing.
   if (parsed.is_software_role === false) {
+    const detected =
+      typeof parsed.detected_domain === 'string' && parsed.detected_domain.trim()
+        ? parsed.detected_domain.trim().toLowerCase().slice(0, 40)
+        : null;
     return finalizeDecode(
-      { role_title: (parsed.role_title || 'Unknown role').slice(0, 80), domain: null },
+      {
+        role_title: (parsed.role_title || 'Unknown role').slice(0, 80),
+        domain: null,
+        detected_domain: detected,
+      },
       [],
       'ai',
     );

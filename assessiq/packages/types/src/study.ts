@@ -81,6 +81,11 @@ export interface DecodeJdResponse {
   // meaningless 'Low' rows.
   matched: boolean;
   source: DecodeJdSource;
+  // The discipline the JD belongs to when the domain gate rejected it, in
+  // plain words ("civil engineering", "nursing"). Lets the UI name what it
+  // saw instead of a generic "no match". null when the role passed the gate,
+  // or when it was rejected but the discipline was unclear.
+  detected_domain: string | null;
   topics: { topic: string; weight: JdWeight; question_count: number }[];
 }
 
