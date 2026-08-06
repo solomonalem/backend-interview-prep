@@ -3,6 +3,7 @@ import type {
   CreateStoryRequest,
   CreateStoryResponse,
   DecodeJdResponse,
+  DecodeJdSource,
   Difficulty,
   JdWeight,
   PracticeResponse,
@@ -236,11 +237,28 @@ function detectDomain(jd: string): string | null {
 function weightFor(topic: string, lc: string): JdWeight {
   const tokens = topic.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
   const hit = tokens.some((t) => lc.includes(t));
-  if (hit) return 'Critical';
-  return 'Differentiator';
+  // A topic the JD never mentions is 'Low', not 'Differentiator'. This keeps
+  // the two engines on the same scale so `matched` means the same thing in
+  // both — previously the heuristic rated every unmatched topic above Low and
+  // could never report a no-match.
+  return hit ? 'Critical' : 'Low';
 }
 
 const WEIGHT_ORDER: Record<JdWeight, number> = { Critical: 0, High: 1, Differentiator: 2, Low: 3 };
+
+type DecodedTopics = { topic: string; weight: JdWeight; question_count: number }[];
+
+// A decode "matched" only if something rose above 'Low'. When nothing did, the
+// JD does not overlap the bank, and returning the full all-'Low' table reads as
+// a broken result — so drop it and let the caller say so plainly.
+function finalizeDecode(
+  base: { role_title: string; domain: string | null },
+  topics: DecodedTopics,
+  source: DecodeJdSource,
+): DecodeJdResponse {
+  const matched = topics.some((t) => t.weight !== 'Low');
+  return { ...base, matched, source, topics: matched ? topics : [] };
+}
 
 function decodeJdHeuristic(jdText: string, counts: Map<string, number>): DecodeJdResponse {
   const lc = jdText.toLowerCase();
@@ -248,11 +266,14 @@ function decodeJdHeuristic(jdText: string, counts: Map<string, number>): DecodeJ
     .map(([topic, question_count]) => ({ topic, weight: weightFor(topic, lc), question_count }))
     .sort((a, b) => WEIGHT_ORDER[a.weight] - WEIGHT_ORDER[b.weight] || b.question_count - a.question_count);
   const firstLine = jdText.split('\n').map((l) => l.trim()).find((l) => l.length > 0);
-  return {
-    role_title: firstLine ? firstLine.slice(0, 80) : 'Software Engineer',
-    domain: detectDomain(jdText),
+  return finalizeDecode(
+    {
+      role_title: firstLine ? firstLine.slice(0, 80) : 'Software Engineer',
+      domain: detectDomain(jdText),
+    },
     topics,
-  };
+    'heuristic',
+  );
 }
 
 async function decodeJdClaude(jdText: string, counts: Map<string, number>): Promise<DecodeJdResponse> {
@@ -284,16 +305,44 @@ Weight every topic that is at all relevant. Critical = core to the role, High = 
     .sort((a, b) => WEIGHT_ORDER[a.weight] - WEIGHT_ORDER[b.weight] || b.question_count - a.question_count);
 
   const domain = !parsed.domain || parsed.domain === 'general' ? null : parsed.domain;
-  return { role_title: (parsed.role_title || 'Software Engineer').slice(0, 80), domain, topics };
+  return finalizeDecode(
+    { role_title: (parsed.role_title || 'Software Engineer').slice(0, 80), domain },
+    topics,
+    'ai',
+  );
 }
+
+// Connection blips and rate limits are worth one retry; a 400 or a malformed
+// JSON body will fail identically the second time, so those fall through.
+function isTransientError(err: unknown): boolean {
+  const e = err as { name?: string; status?: number; code?: string; cause?: { code?: string } };
+  if (e?.name === 'APIConnectionError' || e?.name === 'APIConnectionTimeoutError') return true;
+  const code = e?.code ?? e?.cause?.code;
+  if (code && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) {
+    return true;
+  }
+  return typeof e?.status === 'number' && (e.status === 429 || e.status >= 500);
+}
+
+const RETRY_DELAY_MS = 300;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function decodeJd(jdText: string): Promise<DecodeJdResponse> {
   const counts = await topicCounts();
   if (anthropic) {
-    try {
-      return await decodeJdClaude(jdText, counts);
-    } catch (err) {
-      console.error('[decode-jd] Claude call failed, falling back to heuristic:', err);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await decodeJdClaude(jdText, counts);
+      } catch (err) {
+        const retrying = attempt === 1 && isTransientError(err);
+        console.error(
+          `[decode-jd] Claude call failed (attempt ${attempt}/2)` +
+            (retrying ? ', retrying' : ', falling back to heuristic'),
+          err,
+        );
+        if (!retrying) break;
+        await sleep(RETRY_DELAY_MS);
+      }
     }
   }
   return decodeJdHeuristic(jdText, counts);

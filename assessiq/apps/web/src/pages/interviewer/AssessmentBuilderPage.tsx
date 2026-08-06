@@ -10,9 +10,12 @@ import {
   Briefcase,
   X,
   Layers,
+  FileText,
+  Wand2,
 } from 'lucide-react';
 import type {
   CreateAssessmentRequest,
+  DecodeJdResponse,
   Difficulty,
   QuestionMatchItem,
   QuestionType,
@@ -20,8 +23,10 @@ import type {
 import { DIFFICULTIES, QUESTION_TYPES } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
 import { assessmentsApi } from '../../api/assessments.api';
+import { studyApi } from '../../api/study.api';
 import { ApiRequestError } from '../../api/client';
 import { QuestionCard } from '../../components/QuestionCard';
+import { HeuristicNote, NoMatchNotice } from '../../components/DecodeNotices';
 import {
   Badge,
   Button,
@@ -31,6 +36,7 @@ import {
   Input,
   Label,
   Select,
+  Textarea,
   PageHeader,
   Spinner,
   EmptyState,
@@ -117,8 +123,32 @@ function Chip({
   );
 }
 
+// The decode returns a role title, not a seniority enum. Read one out of it
+// when it is unambiguous, and leave the field alone when it is not — a wrong
+// pre-selection is worse than an empty one the manager fills in themselves.
+// Checked most-senior-first so "Senior Staff Engineer" resolves to staff.
+function seniorityFromRole(roleTitle: string): Difficulty | null {
+  const r = roleTitle.toLowerCase();
+  if (/\b(staff|principal|distinguished|architect)\b/.test(r)) return 'staff';
+  if (/\b(senior|sr\.?|lead)\b/.test(r)) return 'senior';
+  if (/\b(junior|jr\.?|entry|graduate|intern|associate)\b/.test(r)) return 'junior';
+  if (/\b(mid|intermediate)\b/.test(r)) return 'mid';
+  return null;
+}
+
+// How many decoded topics to push into the Technology field. The decode ranks
+// them, so this takes the strongest few — filling all ten would make the match
+// query so broad that the ranking stops meaning anything.
+const MAX_AUTOFILL_TOPICS = 4;
+
 export default function AssessmentBuilderPage() {
   const navigate = useNavigate();
+
+  // ── JD on-ramp (alternative to filling the fields by hand) ─────────────────
+  const [jdText, setJdText] = useState('');
+  const [decoding, setDecoding] = useState(false);
+  const [decoded, setDecoded] = useState<DecodeJdResponse | null>(null);
+  const [decodeError, setDecodeError] = useState<string | null>(null);
 
   // ── Position input ─────────────────────────────────────────────────────────
   const [tech, setTech] = useState<string[]>([]);
@@ -170,6 +200,35 @@ export default function AssessmentBuilderPage() {
 
   const toggleType = (t: QuestionType) =>
     setTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+
+  // Decode a pasted JD and pre-fill the structured fields. This only fills the
+  // form — the manager still reviews it and runs the search themselves, and
+  // question type is always left to them (the decode says nothing about it).
+  const runDecode = async () => {
+    if (!jdText.trim() || decoding) return;
+    setDecoding(true);
+    setDecodeError(null);
+    setDecoded(null);
+    try {
+      const d = await studyApi.decodeJd(jdText);
+      setDecoded(d);
+      if (!d.matched) return; // nothing worth filling — don't write garbage
+      setTech(
+        d.topics
+          .filter((t) => t.weight !== 'Low')
+          .slice(0, MAX_AUTOFILL_TOPICS)
+          .map((t) => t.topic),
+      );
+      const inferred = seniorityFromRole(d.role_title);
+      if (inferred) setSeniority(inferred);
+    } catch (e) {
+      setDecodeError(
+        e instanceof ApiRequestError ? e.message : 'Could not decode this job description.',
+      );
+    } finally {
+      setDecoding(false);
+    }
+  };
 
   const canSearch = tech.length > 0 && seniority !== '' && !searching;
 
@@ -288,12 +347,61 @@ export default function AssessmentBuilderPage() {
             </CardBody>
           </Card>
 
+          {/* JD on-ramp — an alternative to filling the fields below by hand */}
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <FileText size={16} className="text-brand-500" /> Paste a job description
+              </h3>
+              <span className="text-xs text-slate-400">optional shortcut</span>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <Textarea
+                rows={5}
+                placeholder="Paste the job description and we'll fill in the position fields below…"
+                value={jdText}
+                onChange={(e) => setJdText(e.target.value)}
+              />
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-xs text-slate-400">
+                  Sent to our server and an AI provider to decode it. We don't store it.
+                </p>
+                <Button
+                  variant="secondary"
+                  onClick={runDecode}
+                  disabled={!jdText.trim() || decoding}
+                >
+                  {decoding ? <Spinner /> : <Wand2 size={16} />}
+                  {decoding ? 'Decoding…' : 'Decode'}
+                </Button>
+              </div>
+              {decodeError && (
+                <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
+                  {decodeError}
+                </p>
+              )}
+              {decoded?.matched && decoded.source === 'heuristic' && <HeuristicNote />}
+              {decoded?.matched && (
+                <p className="text-xs text-slate-500">
+                  Filled from <span className="font-medium">{decoded.role_title}</span>
+                  {decoded.domain && <> · {decoded.domain}</>} — review the fields below, then
+                  search.
+                </p>
+              )}
+            </CardBody>
+          </Card>
+
+          {decoded && !decoded.matched && (
+            <NoMatchNotice hint="We couldn't map this job description to any topic we have questions for, so the fields below were left alone. Fill them in manually, or try a backend-engineering role." />
+          )}
+
           {/* Position input */}
           <Card>
             <CardHeader>
               <h3 className="flex items-center gap-2 font-semibold text-slate-800">
                 <Briefcase size={16} className="text-brand-500" /> The position
               </h3>
+              <span className="text-xs text-slate-400">or fill in by hand</span>
             </CardHeader>
             <CardBody className="space-y-4">
               <div>
