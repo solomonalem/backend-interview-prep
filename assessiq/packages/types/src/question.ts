@@ -132,3 +132,23 @@ export interface RefineQuestionRequest {
   /** What the manager wants changed, e.g. "make it payment-specific". */
   instruction: string;
 }
+
+// ── Candidate pool (Stage B part 4) ──────────────────────────────────────────
+export interface QuestionPoolRequest {
+  technology: string[];
+  seniority: Difficulty;
+  type?: QuestionType[];
+  /** Minimum size of the pool to present. Defaults to 15. */
+  target?: number;
+  /** false to show bank matches only, with no generation. */
+  generate?: boolean;
+}
+
+export interface QuestionPoolResponse {
+  /** Bank matches first, then anything freshly generated to fill the gap. */
+  questions: QuestionMatchItem[];
+  bank_count: number;
+  generated_count: number;
+  /** Set when generation was attempted and failed — never silently swallowed. */
+  generation_error: string | null;
+}

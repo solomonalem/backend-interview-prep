@@ -5,12 +5,16 @@ import type {
   DraftRubricRequest,
   GenerateQuestionsRequest,
   QuestionDraft,
+  QuestionMatchItem,
+  QuestionPoolRequest,
+  QuestionPoolResponse,
   QuestionType,
   RefineQuestionRequest,
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { anthropic, GENERATION_MODEL } from '../lib/claude.js';
 import { AppError } from '../middleware/error.middleware.js';
+import { matchQuestions } from './question.service.js';
 
 // Drafts are reviewed by an authenticated interviewer, so this select includes
 // the private `_guide` rubric columns. It must never be reused on a
@@ -397,4 +401,97 @@ export async function approveDraft(
 export async function rejectDraft(id: string, interviewerId: string): Promise<void> {
   await loadDraft(id, interviewerId);
   await prisma.question.update({ where: { id }, data: { is_active: false } });
+}
+
+const DEFAULT_POOL_TARGET = 15;
+
+/**
+ * Build the pool the manager picks from: bank matches first, topped up with
+ * freshly generated drafts only if the bank cannot fill it.
+ *
+ * Nothing here is selected — this populates the POOL, not the assessment. The
+ * manager still chooses every question, and a generated one additionally has
+ * to go through review before it can be used.
+ *
+ * Generating up to a full pool is AI-heavy against an empty bank. That is
+ * expected and self-correcting: every approved question becomes a vetted bank
+ * match, so the shortfall shrinks with use.
+ */
+export async function buildQuestionPool(
+  input: QuestionPoolRequest,
+  interviewerId: string,
+): Promise<QuestionPoolResponse> {
+  const target = Math.min(30, Math.max(1, input.target ?? DEFAULT_POOL_TARGET));
+  const bank = await matchQuestions({
+    technology: input.technology,
+    seniority: input.seniority,
+    ...(input.type?.length ? { type: input.type } : {}),
+    limit: target,
+  });
+
+  const shortfall = target - bank.questions.length;
+  if (input.generate === false || shortfall <= 0) {
+    return {
+      questions: bank.questions,
+      bank_count: bank.questions.length,
+      generated_count: 0,
+      generation_error: null,
+    };
+  }
+
+  // Spread the shortfall across the technologies the manager gave, so a
+  // multi-technology position doesn't get a pool about only the first one.
+  const topics = input.technology.length ? input.technology : ['General'];
+  const per = new Map<string, number>();
+  for (let i = 0; i < shortfall; i++) {
+    const t = topics[i % topics.length]!;
+    per.set(t, (per.get(t) ?? 0) + 1);
+  }
+
+  const exclude = bank.questions.map((q) => q.id);
+  // One call per topic, concurrently — sequential calls would make a cold-bank
+  // search unbearably slow.
+  const settled = await Promise.allSettled(
+    [...per.entries()].map(([technology, count]) =>
+      generateQuestions(
+        {
+          technology,
+          seniority: input.seniority,
+          ...(input.type?.length ? { type: input.type[0]! } : {}),
+          count,
+          exclude,
+        },
+        interviewerId,
+      ),
+    ),
+  );
+
+  const generated = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
+  const failures = settled.filter((s) => s.status === 'rejected');
+
+  // Generated drafts genuinely match the topic and seniority they were built
+  // to, and are appended after the bank so vetted questions always read first.
+  const asMatches: QuestionMatchItem[] = generated.map((q) => ({
+    id: q.id,
+    text: q.text,
+    topic: q.topic,
+    difficulty: q.difficulty,
+    type: q.type,
+    domain: q.domain,
+    status: q.status,
+    core_answer_display: q.core_answer_display,
+    senior_signal_display: q.senior_signal_display,
+    trap_display: q.trap_display,
+    matched_on: ['topic', 'difficulty'],
+    match_score: 2,
+  }));
+
+  return {
+    questions: [...bank.questions, ...asMatches],
+    bank_count: bank.questions.length,
+    generated_count: asMatches.length,
+    generation_error: failures.length
+      ? `Could not generate ${failures.length === per.size ? 'any' : 'all'} of the extra questions. Showing what we have.`
+      : null,
+  };
 }

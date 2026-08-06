@@ -5,6 +5,7 @@ import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import { getQuestionById, listQuestions, matchQuestions } from '../services/question.service.js';
 import {
   approveDraft,
+  buildQuestionPool,
   draftRubricForQuestion,
   generateQuestions,
   refineDraft,
@@ -92,6 +93,28 @@ questionsRouter.post(
     }
     const questions = await generateQuestions(parsed.data, req.interviewer!.id);
     res.status(201).json({ questions });
+  }),
+);
+
+const poolSchema = z.object({
+  technology: z.array(z.string().min(1)).min(1),
+  seniority: difficultyEnum,
+  type: z.array(typeEnum).optional(),
+  target: z.number().int().min(1).max(30).optional(),
+  generate: z.boolean().optional(),
+});
+
+// POST /questions/pool — bank matches, topped up with generated drafts if the
+// bank cannot fill the target. Populates the pool only; selects nothing.
+questionsRouter.post(
+  '/pool',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = poolSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION', 'technology and seniority are required');
+    }
+    res.json(await buildQuestionPool(parsed.data, req.interviewer!.id));
   }),
 );
 
