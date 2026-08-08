@@ -107,4 +107,6 @@ export interface CreateLinkResponse {
   token: string;
   url: string;
   expires_at: string;
+  /** Echoes what the link was actually named — may be a generated default. */
+  candidate_label: string | null;
 }
