@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowRight, Send } from 'lucide-react';
+import { ArrowRight, Send, TimerOff } from 'lucide-react';
 import type { BehaviorEventInput, CandidateQuestion } from '@assessiq/types';
 import { Badge, Button, ProgressBar, Textarea, Spinner } from '../../components/ui';
 import { cn } from '../../lib/cn';
@@ -26,6 +26,8 @@ export default function CandidateAssessmentPage() {
   const [confidence, setConfidence] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // null while the timer is running; then the two stages of expiry.
+  const [timeUp, setTimeUp] = useState<null | 'submitting' | 'done'>(null);
   const [remainingMs, setRemainingMs] = useState<number | null>(
     s.expiresAt ? Math.max(0, new Date(s.expiresAt).getTime() - Date.now()) : null,
   );
@@ -102,6 +104,9 @@ export default function CandidateAssessmentPage() {
   }, [sessionId, sessionToken]);
 
   // Countdown from the server-issued expiry; auto-submit at zero.
+  // The candidate is TOLD what happened before we navigate — previously the
+  // page just jumped to the submitted screen, which is indistinguishable from
+  // having pressed submit yourself.
   useEffect(() => {
     if (!expiresAt) return;
     const id = setInterval(() => {
@@ -109,16 +114,48 @@ export default function CandidateAssessmentPage() {
       setRemainingMs(Math.max(0, rem));
       if (rem <= 0) {
         clearInterval(id);
+        setTimeUp('submitting');
         void (async () => {
           await flushEvents();
           if (sessionId && sessionToken) await sessionsApi.submit(sessionId, sessionToken).catch(() => {});
-          finish();
+          setTimeUp('done');
+          // Let the message land before leaving the page.
+          setTimeout(finish, 2500);
         })();
       }
     }, 1000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expiresAt, sessionId, sessionToken]);
+
+  // Blocking overlay: the assessment is over, so there is nothing useful the
+  // candidate could do underneath it.
+  if (timeUp) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-6">
+        <div className="w-full max-w-md rounded-xl bg-white p-8 text-center shadow-xl">
+          <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+            <TimerOff size={22} />
+          </span>
+          <h2 className="text-lg font-bold text-slate-800">Time's up</h2>
+          <p className="mt-2 text-sm text-slate-600 leading-relaxed">
+            {timeUp === 'submitting'
+              ? 'Your time limit has been reached. Submitting your assessment now…'
+              : 'Your assessment has been submitted. Any questions you did not reach are marked as unanswered.'}
+          </p>
+          <div className="mt-5 flex justify-center">
+            {timeUp === 'submitting' ? (
+              <Spinner />
+            ) : (
+              <Button onClick={finish}>
+                Continue <ArrowRight size={16} />
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!sessionId || !sessionToken || !question) return null;
 
@@ -162,7 +199,10 @@ export default function CandidateAssessmentPage() {
         err instanceof ApiRequestError &&
         (err.code === 'SESSION_EXPIRED' || err.code === 'SESSION_CLOSED')
       ) {
-        finish();
+        // The server closed the session while they were answering. Same
+        // explanation as a client-side expiry rather than a silent jump.
+        setTimeUp('done');
+        setTimeout(finish, 2500);
         return;
       }
       setError(err instanceof ApiRequestError ? err.message : 'Could not submit your answer.');
