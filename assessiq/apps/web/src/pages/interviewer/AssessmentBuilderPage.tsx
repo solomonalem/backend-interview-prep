@@ -712,6 +712,41 @@ export default function AssessmentBuilderPage() {
             </CardBody>
           </Card>
 
+          {/* Write your own — an equal path to Find questions, not a footnote
+              buried under the results, so it is visible before any search. */}
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <PenLine size={16} className="text-brand-500" /> Or write your own question
+              </h3>
+              <span className="text-xs text-slate-400">we'll draft the rubric</span>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <fieldset disabled={busy} className={cn(busy && 'opacity-60')}>
+                <Textarea
+                  rows={3}
+                  placeholder="Type your question — we'll draft its scoring rubric for you to review…"
+                  value={ownText}
+                  onChange={(e) => setOwnText(e.target.value)}
+                />
+                <div className="mt-3 flex items-center justify-between gap-4">
+                  <p className="text-xs text-slate-400">
+                    Every question needs a rubric to be scorable — you'll review and edit it before
+                    it's saved.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    onClick={draftOwnQuestion}
+                    disabled={!ownText.trim() || busy}
+                  >
+                    {draftingOwn ? <Spinner /> : <Wand2 size={16} />}
+                    {draftingOwn ? 'Drafting…' : 'Draft rubric'}
+                  </Button>
+                </div>
+              </fieldset>
+            </CardBody>
+          </Card>
+
           {/* Long-running AI work needs to look like work, not a hang. */}
           {(searching || generating) && (
             <Card className="border-brand-200 bg-brand-soft">
@@ -786,40 +821,6 @@ export default function AssessmentBuilderPage() {
             </>
           )}
 
-          {/* Write your own — the AI drafts the rubric, then the same review. */}
-          {results !== null && (
-            <Card>
-              <CardHeader>
-                <h3 className="flex items-center gap-2 font-semibold text-slate-800">
-                  <PenLine size={16} className="text-brand-500" /> Write your own question
-                </h3>
-              </CardHeader>
-              <CardBody className="space-y-3">
-                <fieldset disabled={busy} className={cn('space-y-3', busy && 'opacity-60')}>
-                <Textarea
-                  rows={3}
-                  placeholder="Type your question — we'll draft its scoring rubric for you to review…"
-                  value={ownText}
-                  onChange={(e) => setOwnText(e.target.value)}
-                />
-                <div className="flex items-center justify-between gap-4">
-                  <p className="text-xs text-slate-400">
-                    Every question needs a rubric to be scorable — you'll review and edit it before
-                    it's saved.
-                  </p>
-                  <Button
-                    variant="secondary"
-                    onClick={draftOwnQuestion}
-                    disabled={!ownText.trim() || busy}
-                  >
-                    {draftingOwn ? <Spinner /> : <Wand2 size={16} />}
-                    {draftingOwn ? 'Drafting…' : 'Draft rubric'}
-                  </Button>
-                </div>
-                </fieldset>
-              </CardBody>
-            </Card>
-          )}
         </div>
 
         {/* RIGHT — tray + config */}
