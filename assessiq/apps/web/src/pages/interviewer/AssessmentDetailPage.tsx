@@ -26,6 +26,7 @@ import {
   difficultyTone,
 } from '../../components/ui';
 import { assessmentsApi } from '../../api/assessments.api';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { ApiRequestError } from '../../api/client';
 
 const statusMeta: Record<LinkStatus, { label: string; tone: string }> = {
@@ -64,6 +65,9 @@ export default function AssessmentDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A candidate can submit at any moment; reflect it without a manual reload.
+  useLiveRefresh(load);
 
   const generate = async () => {
     if (!id) return;
