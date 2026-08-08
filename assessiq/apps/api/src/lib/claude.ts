@@ -10,6 +10,12 @@ export const SCORING_MODEL = process.env.SCORING_MODEL ?? 'claude-sonnet-4-6';
 export const DECODE_MODEL = process.env.DECODE_MODEL ?? 'claude-haiku-4-5';
 export const TAGGING_MODEL = process.env.TAGGING_MODEL ?? 'claude-haiku-4-5';
 
+// Writing a question AND a four-part scoring rubric calibrated to a seniority
+// level is a judgement task, not a tagging one — Haiku is too light for it.
+// Sonnet 4.6 also still accepts `temperature`, which generation needs above 0
+// for variety (the rubric is kept precise by the prompt, not by the sampler).
+export const GENERATION_MODEL = process.env.GENERATION_MODEL ?? 'claude-sonnet-4-6';
+
 // null when no API key is configured — the scoring service falls back to a
 // deterministic dev stub so the pipeline is testable without a key.
 export const anthropic = process.env.ANTHROPIC_API_KEY

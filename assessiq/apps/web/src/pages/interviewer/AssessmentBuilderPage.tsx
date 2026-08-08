@@ -12,11 +12,13 @@ import {
   Layers,
   FileText,
   Wand2,
+  PenLine,
 } from 'lucide-react';
 import type {
   CreateAssessmentRequest,
   DecodeJdResponse,
   Difficulty,
+  QuestionDraft,
   QuestionMatchItem,
   QuestionType,
 } from '@assessiq/types';
@@ -27,6 +29,7 @@ import { studyApi } from '../../api/study.api';
 import { ApiRequestError } from '../../api/client';
 import { QuestionCard } from '../../components/QuestionCard';
 import { HeuristicNote, NoMatchNotice } from '../../components/DecodeNotices';
+import { QuestionReviewPanel } from '../../components/QuestionReviewPanel';
 import {
   Badge,
   Button,
@@ -141,6 +144,10 @@ function seniorityFromRole(roleTitle: string): Difficulty | null {
 // query so broad that the ranking stops meaning anything.
 const MAX_AUTOFILL_TOPICS = 4;
 
+// Minimum size of the pool the manager chooses from. Anything the bank cannot
+// supply is generated for review — never auto-selected.
+const POOL_TARGET = 15;
+
 export default function AssessmentBuilderPage() {
   const navigate = useNavigate();
 
@@ -162,6 +169,15 @@ export default function AssessmentBuilderPage() {
   const [results, setResults] = useState<QuestionMatchItem[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [poolNote, setPoolNote] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+
+  // ── Review (Stage B) ───────────────────────────────────────────────────────
+  // A draft must pass through here before it can enter the tray.
+  const [reviewDraft, setReviewDraft] = useState<QuestionDraft | null>(null);
+  const [loadingReview, setLoadingReview] = useState<string | null>(null);
+  const [ownText, setOwnText] = useState('');
+  const [draftingOwn, setDraftingOwn] = useState(false);
 
   // ── Selection tray — the single source of truth for the assessment.
   // A Map keeps insertion order, so question_ids are ordered as selected.
@@ -268,17 +284,26 @@ export default function AssessmentBuilderPage() {
 
   const canSearch = tech.length > 0 && seniority !== '' && !searching;
 
-  const runSearch = async () => {
+  const runSearch = async (generate = true) => {
     if (!canSearch) return;
     setSearching(true);
     setSearchError(null);
+    setPoolNote(null);
     try {
-      const r = await questionsApi.match({
+      const r = await questionsApi.pool({
         technology: tech,
         seniority: seniority as Difficulty,
         ...(types.length ? { type: types } : {}),
+        target: POOL_TARGET,
+        generate,
       });
       setResults(r.questions);
+      setPoolNote(
+        r.generation_error ??
+          (r.generated_count > 0
+            ? `${r.bank_count} from your bank, ${r.generated_count} newly generated for review.`
+            : null),
+      );
     } catch (e) {
       setSearchError(
         e instanceof ApiRequestError ? e.message : 'Could not search the question bank.',
@@ -289,10 +314,67 @@ export default function AssessmentBuilderPage() {
     }
   };
 
+  // Generate more on top of what's already shown, excluding it so drafts don't
+  // repeat. Available even when the bank filled the pool on its own.
+  const generateMore = async () => {
+    if (!tech.length || seniority === '' || generating) return;
+    setGenerating(true);
+    setSearchError(null);
+    try {
+      const r = await questionsApi.generate({
+        technology: tech[0]!,
+        seniority: seniority as Difficulty,
+        ...(types.length ? { type: types[0]! } : {}),
+        count: 3,
+        exclude: (results ?? []).map((q) => q.id),
+      });
+      const extra: QuestionMatchItem[] = r.questions.map((q) => ({
+        id: q.id,
+        text: q.text,
+        topic: q.topic,
+        difficulty: q.difficulty,
+        type: q.type,
+        domain: q.domain,
+        status: q.status,
+        core_answer_display: q.core_answer_display,
+        senior_signal_display: q.senior_signal_display,
+        trap_display: q.trap_display,
+        matched_on: ['topic', 'difficulty'],
+        match_score: 2,
+      }));
+      setResults((prev) => [...(prev ?? []), ...extra]);
+      setPoolNote(`${extra.length} more generated — review before use.`);
+    } catch (e) {
+      setSearchError(e instanceof ApiRequestError ? e.message : 'Could not generate questions.');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   // Explicit selection only — this is the ONLY path into the tray.
-  const toggleQuestion = (id: string) => {
+  // A vetted bank question goes straight in. A draft cannot: it opens the
+  // review panel first, so no unreviewed rubric can reach an assessment.
+  const toggleQuestion = async (id: string) => {
     const found = results?.find((q) => q.id === id) ?? tray.get(id);
     if (!found) return;
+
+    if (!tray.has(id) && found.status === 'draft') {
+      setSearchError(null);
+      setLoadingReview(id);
+      try {
+        // The pool carries only public fields; review needs the private
+        // _guide rubric, so fetch the full draft.
+        setReviewDraft(await questionsApi.getDraft(id));
+      } catch (e) {
+        setSearchError(
+          e instanceof ApiRequestError ? e.message : 'Could not open this question for review.',
+        );
+      } finally {
+        setLoadingReview(null);
+      }
+      return;
+    }
+
     setTray((prev) => {
       const next = new Map(prev);
       if (next.has(id)) next.delete(id);
@@ -300,6 +382,61 @@ export default function AssessmentBuilderPage() {
       return next;
     });
     setError(null);
+  };
+
+  // Approving is what promotes a draft to vetted AND puts it in the tray — the
+  // manager's single explicit act, never automatic.
+  const onApproved = (q: QuestionDraft) => {
+    const item: QuestionMatchItem = {
+      id: q.id,
+      text: q.text,
+      topic: q.topic,
+      difficulty: q.difficulty,
+      type: q.type,
+      domain: q.domain,
+      status: q.status,
+      core_answer_display: q.core_answer_display,
+      senior_signal_display: q.senior_signal_display,
+      trap_display: q.trap_display,
+      matched_on: ['topic', 'difficulty'],
+      match_score: 2,
+    };
+    setResults((prev) => (prev ?? []).map((r) => (r.id === q.id ? item : r)));
+    setTray((prev) => new Map(prev).set(q.id, item));
+    setReviewDraft(null);
+    setError(null);
+  };
+
+  const onRejected = (id: string) => {
+    setResults((prev) => (prev ?? []).filter((r) => r.id !== id));
+    setReviewDraft(null);
+  };
+
+  // Manager writes the question; the AI drafts its rubric; it then goes through
+  // the same review panel. A question without a rubric can never be scored, so
+  // there is no path that skips this.
+  const draftOwnQuestion = async () => {
+    if (!ownText.trim() || draftingOwn) return;
+    if (!tech.length || seniority === '') {
+      setSearchError('Add a technology and seniority first — the rubric is calibrated to them.');
+      return;
+    }
+    setDraftingOwn(true);
+    setSearchError(null);
+    try {
+      const draft = await questionsApi.draftRubric({
+        text: ownText.trim(),
+        topic: tech[0]!,
+        seniority: seniority as Difficulty,
+        ...(types.length ? { type: types[0]! } : {}),
+      });
+      setReviewDraft(draft);
+      setOwnText('');
+    } catch (e) {
+      setSearchError(e instanceof ApiRequestError ? e.message : 'Could not draft a rubric.');
+    } finally {
+      setDraftingOwn(false);
+    }
   };
 
   const removeFromTray = (id: string) => {
@@ -350,6 +487,14 @@ export default function AssessmentBuilderPage() {
 
   return (
     <>
+      {reviewDraft && (
+        <QuestionReviewPanel
+          draft={reviewDraft}
+          onApproved={onApproved}
+          onRejected={onRejected}
+          onClose={() => setReviewDraft(null)}
+        />
+      )}
       <PageHeader
         title="New Assessment"
         subtitle="Describe the position, pick the questions you want, then generate a candidate link."
@@ -546,7 +691,7 @@ export default function AssessmentBuilderPage() {
                 <p className="text-xs text-slate-400">
                   We match loosely — questions matching only some of these still appear, ranked lower.
                 </p>
-                <Button onClick={runSearch} disabled={!canSearch}>
+                <Button onClick={() => runSearch()} disabled={!canSearch}>
                   {searching ? (
                     <Spinner className="border-white/40 border-t-white" />
                   ) : (
@@ -582,9 +727,10 @@ export default function AssessmentBuilderPage() {
             </Card>
           ) : (
             <>
-              <div className="flex items-center justify-between px-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1">
                 <p className="text-xs text-slate-400">
-                  {results.length} match{results.length === 1 ? '' : 'es'}, best first
+                  {results.length} in the pool, bank questions first
+                  {poolNote && <span className="ml-1.5 text-slate-500">· {poolNote}</span>}
                 </p>
                 {tray.size > 0 && (
                   <p className="text-xs font-medium text-brand-600">{tray.size} in this assessment</p>
@@ -592,16 +738,62 @@ export default function AssessmentBuilderPage() {
               </div>
               <div className="space-y-2.5">
                 {results.map((q) => (
-                  <QuestionCard
-                    key={q.id}
-                    question={q}
-                    selected={tray.has(q.id)}
-                    onToggle={toggleQuestion}
-                    matchedOn={q.matched_on}
-                  />
+                  <div key={q.id} className="relative">
+                    <QuestionCard
+                      question={q}
+                      selected={tray.has(q.id)}
+                      onToggle={toggleQuestion}
+                      matchedOn={q.matched_on}
+                    />
+                    {loadingReview === q.id && (
+                      <span className="absolute right-4 top-4">
+                        <Spinner />
+                      </span>
+                    )}
+                  </div>
                 ))}
               </div>
+
+              <div className="flex justify-center pt-1">
+                <Button variant="secondary" onClick={generateMore} disabled={generating}>
+                  {generating ? <Spinner /> : <Sparkles size={16} />}
+                  {generating ? 'Generating…' : 'Generate more with AI'}
+                </Button>
+              </div>
             </>
+          )}
+
+          {/* Write your own — the AI drafts the rubric, then the same review. */}
+          {results !== null && (
+            <Card>
+              <CardHeader>
+                <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                  <PenLine size={16} className="text-brand-500" /> Write your own question
+                </h3>
+              </CardHeader>
+              <CardBody className="space-y-3">
+                <Textarea
+                  rows={3}
+                  placeholder="Type your question — we'll draft its scoring rubric for you to review…"
+                  value={ownText}
+                  onChange={(e) => setOwnText(e.target.value)}
+                />
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-xs text-slate-400">
+                    Every question needs a rubric to be scorable — you'll review and edit it before
+                    it's saved.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    onClick={draftOwnQuestion}
+                    disabled={!ownText.trim() || draftingOwn}
+                  >
+                    {draftingOwn ? <Spinner /> : <Wand2 size={16} />}
+                    {draftingOwn ? 'Drafting…' : 'Draft rubric'}
+                  </Button>
+                </div>
+              </CardBody>
+            </Card>
           )}
         </div>
 

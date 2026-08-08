@@ -22,6 +22,7 @@ const PUBLIC_SELECT = {
   difficulty: true,
   type: true,
   domain: true,
+  status: true,
   core_answer_display: true,
   senior_signal_display: true,
   trap_display: true,
