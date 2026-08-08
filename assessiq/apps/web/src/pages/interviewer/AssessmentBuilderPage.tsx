@@ -298,12 +298,12 @@ export default function AssessmentBuilderPage() {
         generate,
       });
       setResults(r.questions);
-      setPoolNote(
-        r.generation_error ??
-          (r.generated_count > 0
-            ? `${r.bank_count} from your bank, ${r.generated_count} newly generated for review.`
-            : null),
-      );
+      const parts = [
+        `${r.relevant_count} on-topic from your bank`,
+        r.generated_count > 0 ? `${r.generated_count} newly generated for review` : null,
+        r.loose_count > 0 ? `${r.loose_count} related by seniority` : null,
+      ].filter(Boolean);
+      setPoolNote(r.generation_error ?? parts.join(', ') + '.');
     } catch (e) {
       setSearchError(
         e instanceof ApiRequestError ? e.message : 'Could not search the question bank.',
