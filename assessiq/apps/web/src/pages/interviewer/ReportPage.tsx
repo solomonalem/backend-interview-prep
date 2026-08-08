@@ -159,6 +159,8 @@ export default function ReportPage() {
 
   if (!report) return null;
   const { session, assessment, overall, proctoring, questions } = report;
+  // answer === null means the candidate never submitted that question.
+  const unansweredCount = questions.filter((q) => q.answer === null).length;
   const timeUsedMin = Math.round(session.time_used_ms / 60_000);
   const pasteCount = proctoring.paste_events.length;
   const clean =
@@ -247,9 +249,27 @@ export default function ReportPage() {
       </Card>
 
       {/* PER-QUESTION */}
+      {unansweredCount > 0 && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>
+            <span className="font-medium">
+              {unansweredCount} of {questions.length} question{questions.length === 1 ? '' : 's'} not
+              answered.
+            </span>{' '}
+            {session.auto_submitted
+              ? 'The timer expired before the candidate finished.'
+              : 'The candidate submitted without answering everything.'}{' '}
+            Scores above are averaged over answered questions only.
+          </span>
+        </div>
+      )}
       <div className="flex items-center justify-between mb-3 px-1">
         <h2 className="text-sm font-semibold text-slate-700">Question breakdown</h2>
-        <span className="text-xs text-slate-400">{questions.length} questions</span>
+        <span className="text-xs text-slate-400">
+          {questions.length} question{questions.length === 1 ? '' : 's'}
+          {unansweredCount > 0 && ` · ${questions.length - unansweredCount} answered`}
+        </span>
       </div>
 
       <div className="space-y-5">
@@ -269,7 +289,12 @@ export default function ReportPage() {
                     <p className="text-[15px] font-medium text-slate-800 leading-snug">{q.question.text}</p>
                   </div>
                   <div className="shrink-0 text-right">
-                    {s ? (
+                    {/* Three distinct states: unanswered, answered-but-unscored,
+                        and scored. Collapsing the first two would hide that the
+                        candidate never got to this question. */}
+                    {q.answer === null ? (
+                      <Badge tone="amber">Not answered</Badge>
+                    ) : s ? (
                       <>
                         <p className={cn('text-2xl font-bold tabular leading-none', s.total_pct >= 70 ? 'text-emerald-600' : s.total_pct >= 45 ? 'text-amber-600' : 'text-rose-600')}>
                           {s.total_pct}%
@@ -282,7 +307,15 @@ export default function ReportPage() {
                   </div>
                 </div>
 
-                {q.answer && (
+                {q.answer === null ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-800">
+                    <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                    <span>
+                      <span className="font-medium">Not answered.</span> The candidate did not submit
+                      a response to this question — it does not count toward the scores above.
+                    </span>
+                  </div>
+                ) : (
                   <div className="rounded-lg bg-slate-50 p-3.5">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Answer</p>
                     <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">

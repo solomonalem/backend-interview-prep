@@ -89,7 +89,23 @@ export async function getReport(
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
     include: {
-      assessment: { select: { title: true, timer_seconds: true, owner_id: true } },
+      assessment: {
+        select: {
+          title: true,
+          timer_seconds: true,
+          owner_id: true,
+          // The report is driven by what the assessment ASKED, not by what came
+          // back — otherwise a question the candidate never answered vanishes
+          // and the manager cannot tell they didn't finish.
+          questions: {
+            orderBy: { position: 'asc' },
+            select: {
+              position: true,
+              question: { select: { id: true, text: true, topic: true, difficulty: true } },
+            },
+          },
+        },
+      },
       answers: {
         orderBy: { position: 'asc' },
         include: {
@@ -125,6 +141,8 @@ export async function getReport(
   const pastedPositions = new Set(
     session.behavior_events.filter((e) => e.type === 'paste').map((e) => e.question_index),
   );
+
+  const answersByQuestion = new Map(session.answers.map((a) => [a.question_id, a]));
 
   return {
     code: 200,
@@ -162,8 +180,23 @@ export async function getReport(
         idle_count: session.report.idle_count,
         context_note: session.report.proctoring_context,
       },
-      questions: session.answers.map((a) => {
-        const score: ReportScore | null = a.score
+      // Walk the assessment's questions, not the answers, so unanswered ones
+      // are present with answer: null. Falls back to the answer list if the
+      // assessment has no question rows (shouldn't happen, but a report that
+      // renders beats one that throws).
+      questions: (session.assessment.questions.length
+        ? session.assessment.questions.map((aq) => ({
+            position: aq.position,
+            question: aq.question,
+            answer: answersByQuestion.get(aq.question.id) ?? null,
+          }))
+        : session.answers.map((a) => ({
+            position: a.position,
+            question: a.question,
+            answer: a,
+          }))
+      ).map(({ position, question, answer: a }) => {
+        const score: ReportScore | null = a?.score
           ? {
               total_pct: a.score.total_pct,
               core_pct: a.score.core_pct,
@@ -180,17 +213,25 @@ export async function getReport(
             }
           : null;
         return {
-          position: a.position,
+          position,
           question: {
-            id: a.question.id,
-            text: a.question.text,
-            topic: a.question.topic,
-            difficulty: a.question.difficulty as Difficulty,
+            id: question.id,
+            text: question.text,
+            topic: question.topic,
+            difficulty: question.difficulty as Difficulty,
           },
-          answer: { text: a.text, time_spent_ms: a.time_spent_ms, paste_detected: pastedPositions.has(a.position) },
+          // null means the candidate never submitted this one — the UI renders
+          // it as "Not answered" rather than dropping the row.
+          answer: a
+            ? {
+                text: a.text,
+                time_spent_ms: a.time_spent_ms,
+                paste_detected: pastedPositions.has(a.position),
+              }
+            : null,
           score,
-          confidence_rating: a.confidence_rating,
-          confidence_flag: a.score?.confidence_flag ?? null,
+          confidence_rating: a?.confidence_rating ?? null,
+          confidence_flag: a?.score?.confidence_flag ?? null,
         };
       }),
       pdf_url: session.report.pdf_url,

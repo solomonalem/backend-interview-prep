@@ -145,9 +145,16 @@ export interface QuestionPoolRequest {
 }
 
 export interface QuestionPoolResponse {
-  /** Bank matches first, then anything freshly generated to fill the gap. */
+  /** Topic-relevant bank matches, then generated, then seniority-only matches. */
   questions: QuestionMatchItem[];
-  bank_count: number;
+  /** Bank matches that actually matched the topic. Only these count toward the target. */
+  relevant_count: number;
+  /**
+   * Bank matches on seniority/type alone. Shown last as extra breadth, and
+   * deliberately excluded from the target — otherwise a well-stocked seniority
+   * fills the pool with off-topic questions and suppresses generation forever.
+   */
+  loose_count: number;
   generated_count: number;
   /** Set when generation was attempted and failed — never silently swallowed. */
   generation_error: string | null;

@@ -40,6 +40,12 @@ const DRAFT_SELECT = {
 // prompt's explicit requirements, not by clamping the sampler to 0.
 const GENERATION_TEMPERATURE = 0.7;
 
+// A question plus its seven rubric fields runs ~1,200-1,500 output tokens, so
+// a large `count` in one call overruns max_tokens and returns truncated JSON.
+// Batch instead, and size the budget for a full batch plus headroom.
+const MAX_QUESTIONS_PER_CALL = 3;
+const GENERATION_MAX_TOKENS = 8000;
+
 const RUBRIC_SPEC = `Every question MUST carry a complete four-part rubric — an answer cannot be
 scored without one. The four components and their scoring weights:
 - core_answer  (25%) what any correct answer must cover
@@ -157,11 +163,16 @@ async function callGenerator(system: string, user: string): Promise<{ questions:
     try {
       const res = await anthropic.messages.create({
         model: GENERATION_MODEL,
-        max_tokens: 4000,
+        max_tokens: GENERATION_MAX_TOKENS,
         temperature: GENERATION_TEMPERATURE,
         system,
         messages: [{ role: 'user', content: user }],
       });
+      // Truncation surfaces as unterminated JSON several frames later, which
+      // is a confusing way to learn the budget was too small. Name it here.
+      if (res.stop_reason === 'max_tokens') {
+        throw new Error(`generation truncated at max_tokens (${GENERATION_MAX_TOKENS})`);
+      }
       const block = res.content[0];
       if (!block || block.type !== 'text') throw new Error('unexpected response type');
       return JSON.parse(block.text.replace(/```json|```/g, '').trim());
@@ -202,7 +213,31 @@ export async function generateQuestions(
   input: GenerateQuestionsRequest,
   interviewerId: string,
 ): Promise<QuestionDraft[]> {
-  const count = Math.min(15, Math.max(1, input.count ?? 1));
+  const total = Math.min(15, Math.max(1, input.count ?? 1));
+
+  // Split into batches the token budget can actually hold, and run them
+  // concurrently. Batches don't see each other's output, so two drafts in one
+  // request can overlap — acceptable for now; `exclude` still keeps them off
+  // anything already on screen.
+  if (total > MAX_QUESTIONS_PER_CALL) {
+    const batches: number[] = [];
+    for (let left = total; left > 0; left -= MAX_QUESTIONS_PER_CALL) {
+      batches.push(Math.min(MAX_QUESTIONS_PER_CALL, left));
+    }
+    const settled = await Promise.allSettled(
+      batches.map((count) => generateQuestions({ ...input, count }, interviewerId)),
+    );
+    const ok = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
+    if (!ok.length) {
+      const first = settled.find((s) => s.status === 'rejected') as PromiseRejectedResult | undefined;
+      throw first?.reason instanceof AppError
+        ? first.reason
+        : new AppError(502, 'GENERATION_FAILED', 'Generation failed.');
+    }
+    return ok;
+  }
+
+  const count = total;
   const avoid = await excludedTexts(input.exclude ?? []);
 
   const system = `You write technical interview questions and their scoring rubrics for a
@@ -437,14 +472,24 @@ export async function buildQuestionPool(
     technology: input.technology,
     seniority: input.seniority,
     ...(input.type?.length ? { type: input.type } : {}),
-    limit: target,
+    // Headroom so the loose tail survives alongside a full set of relevant hits.
+    limit: Math.min(100, target * 2),
   });
 
-  const shortfall = target - bank.questions.length;
+  // ONLY topic matches count toward the target. Seniority-only matches are
+  // shown as extra breadth but must never satisfy the target: a bank with 16
+  // senior questions would otherwise fill a GraphQL search with Kafka and
+  // Redis and suppress generation permanently, which is the opposite of what
+  // filling the pool is for.
+  const relevant = bank.questions.filter((q) => q.matched_on.includes('topic'));
+  const loose = bank.questions.filter((q) => !q.matched_on.includes('topic')).slice(0, target);
+
+  const shortfall = target - relevant.length;
   if (input.generate === false || shortfall <= 0) {
     return {
-      questions: bank.questions,
-      bank_count: bank.questions.length,
+      questions: [...relevant, ...loose],
+      relevant_count: relevant.length,
+      loose_count: loose.length,
       generated_count: 0,
       generation_error: null,
     };
@@ -459,6 +504,8 @@ export async function buildQuestionPool(
     per.set(t, (per.get(t) ?? 0) + 1);
   }
 
+  // Exclude everything already on screen, loose matches included, so a draft
+  // never duplicates something the manager can already see.
   const exclude = bank.questions.map((q) => q.id);
   // One call per topic, concurrently — sequential calls would make a cold-bank
   // search unbearably slow.
@@ -497,9 +544,12 @@ export async function buildQuestionPool(
     match_score: 2,
   }));
 
+  // Order: vetted-first among the topic-relevant, then the fresh drafts (also
+  // topic-relevant), then the seniority-only tail.
   return {
-    questions: [...bank.questions, ...asMatches],
-    bank_count: bank.questions.length,
+    questions: [...relevant, ...asMatches, ...loose],
+    relevant_count: relevant.length,
+    loose_count: loose.length,
     generated_count: asMatches.length,
     generation_error: failures.length
       ? `Could not generate ${failures.length === per.size ? 'any' : 'all'} of the extra questions. Showing what we have.`

@@ -282,7 +282,11 @@ export default function AssessmentBuilderPage() {
     }
   };
 
-  const canSearch = tech.length > 0 && seniority !== '' && !searching;
+  // Any in-flight AI call. Generation can run ~90s, during which changing the
+  // position or firing a second search would land the manager in a state that
+  // no longer matches the results coming back.
+  const busy = searching || generating || decoding || draftingOwn;
+  const canSearch = tech.length > 0 && seniority !== '' && !busy;
 
   const runSearch = async (generate = true) => {
     if (!canSearch) return;
@@ -298,12 +302,12 @@ export default function AssessmentBuilderPage() {
         generate,
       });
       setResults(r.questions);
-      setPoolNote(
-        r.generation_error ??
-          (r.generated_count > 0
-            ? `${r.bank_count} from your bank, ${r.generated_count} newly generated for review.`
-            : null),
-      );
+      const parts = [
+        `${r.relevant_count} on-topic from your bank`,
+        r.generated_count > 0 ? `${r.generated_count} newly generated for review` : null,
+        r.loose_count > 0 ? `${r.loose_count} related by seniority` : null,
+      ].filter(Boolean);
+      setPoolNote(r.generation_error ?? parts.join(', ') + '.');
     } catch (e) {
       setSearchError(
         e instanceof ApiRequestError ? e.message : 'Could not search the question bank.',
@@ -537,6 +541,7 @@ export default function AssessmentBuilderPage() {
               <span className="text-xs text-slate-400">optional shortcut</span>
             </CardHeader>
             <CardBody className="space-y-3">
+              <fieldset disabled={busy} className={cn('space-y-3', busy && 'opacity-60')}>
               <Textarea
                 rows={5}
                 placeholder="Paste the job description and we'll fill in the position fields below…"
@@ -547,15 +552,12 @@ export default function AssessmentBuilderPage() {
                 <p className="text-xs text-slate-400">
                   Sent to our server and an AI provider to decode it. We don't store it.
                 </p>
-                <Button
-                  variant="secondary"
-                  onClick={runDecode}
-                  disabled={!jdText.trim() || decoding}
-                >
+                <Button variant="secondary" onClick={runDecode} disabled={!jdText.trim() || busy}>
                   {decoding ? <Spinner /> : <Wand2 size={16} />}
                   {decoding ? 'Decoding…' : 'Decode'}
                 </Button>
               </div>
+              </fieldset>
               {decodeError && (
                 <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
                   {decodeError}
@@ -588,6 +590,7 @@ export default function AssessmentBuilderPage() {
               <span className="text-xs text-slate-400">or fill in by hand</span>
             </CardHeader>
             <CardBody className="space-y-4">
+              <fieldset disabled={busy} className={cn('space-y-4', busy && 'opacity-60')}>
               <div>
                 <Label>Title / role</Label>
                 <Input
@@ -700,6 +703,7 @@ export default function AssessmentBuilderPage() {
                   {searching ? 'Searching…' : 'Find questions'}
                 </Button>
               </div>
+              </fieldset>
               {searchError && (
                 <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
                   {searchError}
@@ -707,6 +711,60 @@ export default function AssessmentBuilderPage() {
               )}
             </CardBody>
           </Card>
+
+          {/* Write your own — an equal path to Find questions, not a footnote
+              buried under the results, so it is visible before any search. */}
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <PenLine size={16} className="text-brand-500" /> Or write your own question
+              </h3>
+              <span className="text-xs text-slate-400">we'll draft the rubric</span>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <fieldset disabled={busy} className={cn(busy && 'opacity-60')}>
+                <Textarea
+                  rows={3}
+                  placeholder="Type your question — we'll draft its scoring rubric for you to review…"
+                  value={ownText}
+                  onChange={(e) => setOwnText(e.target.value)}
+                />
+                <div className="mt-3 flex items-center justify-between gap-4">
+                  <p className="text-xs text-slate-400">
+                    Every question needs a rubric to be scorable — you'll review and edit it before
+                    it's saved.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    onClick={draftOwnQuestion}
+                    disabled={!ownText.trim() || busy}
+                  >
+                    {draftingOwn ? <Spinner /> : <Wand2 size={16} />}
+                    {draftingOwn ? 'Drafting…' : 'Draft rubric'}
+                  </Button>
+                </div>
+              </fieldset>
+            </CardBody>
+          </Card>
+
+          {/* Long-running AI work needs to look like work, not a hang. */}
+          {(searching || generating) && (
+            <Card className="border-brand-200 bg-brand-soft">
+              <CardBody className="flex items-start gap-3">
+                <Spinner className="mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-slate-800">
+                    {generating ? 'Generating questions…' : 'Building your question pool…'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    If the bank can't cover this position we write new questions and their rubrics,
+                    which takes up to a couple of minutes. The position fields are locked until this
+                    finishes so the results match what you asked for.
+                  </p>
+                </div>
+              </CardBody>
+            </Card>
+          )}
 
           {/* Results */}
           {results === null ? (
@@ -736,7 +794,7 @@ export default function AssessmentBuilderPage() {
                   <p className="text-xs font-medium text-brand-600">{tray.size} in this assessment</p>
                 )}
               </div>
-              <div className="space-y-2.5">
+              <fieldset disabled={busy} className={cn('space-y-2.5', busy && 'opacity-60')}>
                 {results.map((q) => (
                   <div key={q.id} className="relative">
                     <QuestionCard
@@ -752,10 +810,10 @@ export default function AssessmentBuilderPage() {
                     )}
                   </div>
                 ))}
-              </div>
+              </fieldset>
 
               <div className="flex justify-center pt-1">
-                <Button variant="secondary" onClick={generateMore} disabled={generating}>
+                <Button variant="secondary" onClick={generateMore} disabled={busy}>
                   {generating ? <Spinner /> : <Sparkles size={16} />}
                   {generating ? 'Generating…' : 'Generate more with AI'}
                 </Button>
@@ -763,38 +821,6 @@ export default function AssessmentBuilderPage() {
             </>
           )}
 
-          {/* Write your own — the AI drafts the rubric, then the same review. */}
-          {results !== null && (
-            <Card>
-              <CardHeader>
-                <h3 className="flex items-center gap-2 font-semibold text-slate-800">
-                  <PenLine size={16} className="text-brand-500" /> Write your own question
-                </h3>
-              </CardHeader>
-              <CardBody className="space-y-3">
-                <Textarea
-                  rows={3}
-                  placeholder="Type your question — we'll draft its scoring rubric for you to review…"
-                  value={ownText}
-                  onChange={(e) => setOwnText(e.target.value)}
-                />
-                <div className="flex items-center justify-between gap-4">
-                  <p className="text-xs text-slate-400">
-                    Every question needs a rubric to be scorable — you'll review and edit it before
-                    it's saved.
-                  </p>
-                  <Button
-                    variant="secondary"
-                    onClick={draftOwnQuestion}
-                    disabled={!ownText.trim() || draftingOwn}
-                  >
-                    {draftingOwn ? <Spinner /> : <Wand2 size={16} />}
-                    {draftingOwn ? 'Drafting…' : 'Draft rubric'}
-                  </Button>
-                </div>
-              </CardBody>
-            </Card>
-          )}
         </div>
 
         {/* RIGHT — tray + config */}
