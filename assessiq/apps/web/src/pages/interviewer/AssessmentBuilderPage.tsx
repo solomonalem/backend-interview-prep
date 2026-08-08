@@ -282,7 +282,11 @@ export default function AssessmentBuilderPage() {
     }
   };
 
-  const canSearch = tech.length > 0 && seniority !== '' && !searching;
+  // Any in-flight AI call. Generation can run ~90s, during which changing the
+  // position or firing a second search would land the manager in a state that
+  // no longer matches the results coming back.
+  const busy = searching || generating || decoding || draftingOwn;
+  const canSearch = tech.length > 0 && seniority !== '' && !busy;
 
   const runSearch = async (generate = true) => {
     if (!canSearch) return;
@@ -537,6 +541,7 @@ export default function AssessmentBuilderPage() {
               <span className="text-xs text-slate-400">optional shortcut</span>
             </CardHeader>
             <CardBody className="space-y-3">
+              <fieldset disabled={busy} className={cn('space-y-3', busy && 'opacity-60')}>
               <Textarea
                 rows={5}
                 placeholder="Paste the job description and we'll fill in the position fields below…"
@@ -547,15 +552,12 @@ export default function AssessmentBuilderPage() {
                 <p className="text-xs text-slate-400">
                   Sent to our server and an AI provider to decode it. We don't store it.
                 </p>
-                <Button
-                  variant="secondary"
-                  onClick={runDecode}
-                  disabled={!jdText.trim() || decoding}
-                >
+                <Button variant="secondary" onClick={runDecode} disabled={!jdText.trim() || busy}>
                   {decoding ? <Spinner /> : <Wand2 size={16} />}
                   {decoding ? 'Decoding…' : 'Decode'}
                 </Button>
               </div>
+              </fieldset>
               {decodeError && (
                 <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
                   {decodeError}
@@ -588,6 +590,7 @@ export default function AssessmentBuilderPage() {
               <span className="text-xs text-slate-400">or fill in by hand</span>
             </CardHeader>
             <CardBody className="space-y-4">
+              <fieldset disabled={busy} className={cn('space-y-4', busy && 'opacity-60')}>
               <div>
                 <Label>Title / role</Label>
                 <Input
@@ -700,6 +703,7 @@ export default function AssessmentBuilderPage() {
                   {searching ? 'Searching…' : 'Find questions'}
                 </Button>
               </div>
+              </fieldset>
               {searchError && (
                 <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
                   {searchError}
@@ -707,6 +711,25 @@ export default function AssessmentBuilderPage() {
               )}
             </CardBody>
           </Card>
+
+          {/* Long-running AI work needs to look like work, not a hang. */}
+          {(searching || generating) && (
+            <Card className="border-brand-200 bg-brand-soft">
+              <CardBody className="flex items-start gap-3">
+                <Spinner className="mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-slate-800">
+                    {generating ? 'Generating questions…' : 'Building your question pool…'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    If the bank can't cover this position we write new questions and their rubrics,
+                    which takes up to a couple of minutes. The position fields are locked until this
+                    finishes so the results match what you asked for.
+                  </p>
+                </div>
+              </CardBody>
+            </Card>
+          )}
 
           {/* Results */}
           {results === null ? (
@@ -736,7 +759,7 @@ export default function AssessmentBuilderPage() {
                   <p className="text-xs font-medium text-brand-600">{tray.size} in this assessment</p>
                 )}
               </div>
-              <div className="space-y-2.5">
+              <fieldset disabled={busy} className={cn('space-y-2.5', busy && 'opacity-60')}>
                 {results.map((q) => (
                   <div key={q.id} className="relative">
                     <QuestionCard
@@ -752,10 +775,10 @@ export default function AssessmentBuilderPage() {
                     )}
                   </div>
                 ))}
-              </div>
+              </fieldset>
 
               <div className="flex justify-center pt-1">
-                <Button variant="secondary" onClick={generateMore} disabled={generating}>
+                <Button variant="secondary" onClick={generateMore} disabled={busy}>
                   {generating ? <Spinner /> : <Sparkles size={16} />}
                   {generating ? 'Generating…' : 'Generate more with AI'}
                 </Button>
@@ -772,6 +795,7 @@ export default function AssessmentBuilderPage() {
                 </h3>
               </CardHeader>
               <CardBody className="space-y-3">
+                <fieldset disabled={busy} className={cn('space-y-3', busy && 'opacity-60')}>
                 <Textarea
                   rows={3}
                   placeholder="Type your question — we'll draft its scoring rubric for you to review…"
@@ -786,12 +810,13 @@ export default function AssessmentBuilderPage() {
                   <Button
                     variant="secondary"
                     onClick={draftOwnQuestion}
-                    disabled={!ownText.trim() || draftingOwn}
+                    disabled={!ownText.trim() || busy}
                   >
                     {draftingOwn ? <Spinner /> : <Wand2 size={16} />}
                     {draftingOwn ? 'Drafting…' : 'Draft rubric'}
                   </Button>
                 </div>
+                </fieldset>
               </CardBody>
             </Card>
           )}
