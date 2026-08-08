@@ -1,5 +1,6 @@
 import type {
   AssessmentDetail,
+  AssessmentDetailLink,
   AssessmentListResponse,
   CreateAssessmentRequest,
   CreateAssessmentResponse,
@@ -15,4 +16,7 @@ export const assessmentsApi = {
   get: (id: string) => api.get<AssessmentDetail>(`/assessments/${id}`),
   createLink: (id: string, body: CreateLinkRequest = {}) =>
     api.post<CreateLinkResponse>(`/assessments/${id}/links`, body),
+  // null clears the label back to the generated fallback.
+  updateLink: (id: string, linkId: string, candidate_label: string | null) =>
+    api.patch<AssessmentDetailLink>(`/assessments/${id}/links/${linkId}`, { candidate_label }),
 };

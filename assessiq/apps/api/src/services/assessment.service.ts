@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type {
   AssessmentDetail,
+  AssessmentDetailLink,
   AssessmentListResponse,
   CreateAssessmentRequest,
   CreateAssessmentResponse,
@@ -192,6 +193,37 @@ export async function getAssessmentDetail(
 }
 
 // ── POST /assessments/:id/links ──────────────────────────────────────────────
+/**
+ * Rename a candidate link. Passing null clears the label back to the
+ * unlabelled fallback — the ~10 links created before defaults existed can be
+ * given real names this way.
+ */
+export async function updateLinkLabel(
+  ownerId: string,
+  assessmentId: string,
+  linkId: string,
+  candidateLabel: string | null,
+): Promise<AssessmentDetailLink> {
+  const link = await prisma.assessmentLink.findFirst({
+    where: { id: linkId, assessment_id: assessmentId, assessment: { owner_id: ownerId } },
+    select: { id: true },
+  });
+  if (!link) throw new AppError(404, 'LINK_NOT_FOUND', 'Candidate link not found');
+
+  const trimmed = candidateLabel?.trim();
+  await prisma.assessmentLink.update({
+    where: { id: linkId },
+    data: { candidate_label: trimmed ? trimmed : null },
+  });
+
+  // Re-read through the detail path so the caller gets the same shape (and
+  // derived status) as everywhere else rather than a hand-built object.
+  const detail = await getAssessmentDetail(ownerId, assessmentId);
+  const updated = detail.links.find((l) => l.id === linkId);
+  if (!updated) throw new AppError(404, 'LINK_NOT_FOUND', 'Candidate link not found');
+  return updated;
+}
+
 export async function createLink(
   ownerId: string,
   assessmentId: string,

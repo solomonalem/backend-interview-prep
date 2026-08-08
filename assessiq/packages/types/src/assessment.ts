@@ -96,6 +96,12 @@ export interface CreateLinkRequest {
   expires_in_hours?: number;
 }
 
+// ── PATCH /assessments/:id/links/:linkId ─────────────────────────────────────
+/** null clears the label back to the unlabelled fallback. */
+export interface UpdateLinkRequest {
+  candidate_label: string | null;
+}
+
 export interface CreateLinkResponse {
   id: string;
   token: string;

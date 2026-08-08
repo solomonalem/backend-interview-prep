@@ -40,6 +40,12 @@ export const api = {
       body: data !== undefined ? JSON.stringify(data) : undefined,
       headers,
     }),
+  patch: <T>(path: string, data?: unknown, headers?: Headers) =>
+    request<T>(path, {
+      method: 'PATCH',
+      body: data !== undefined ? JSON.stringify(data) : undefined,
+      headers,
+    }),
   put: <T>(path: string, data?: unknown, headers?: Headers) =>
     request<T>(path, {
       method: 'PUT',
