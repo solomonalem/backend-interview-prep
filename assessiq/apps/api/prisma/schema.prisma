@@ -136,7 +136,11 @@ model AssessmentLink {
   assessment_id   String
   assessment      Assessment  @relation(fields: [assessment_id], references: [id], onDelete: Cascade)
 
-  candidate_label String?     // e.g. "Candidate A" or email — optional
+  candidate_label String?     // e.g. "Candidate A" — optional, auto-defaults to "Candidate N"
+  // Optional. When set, the link is emailed to the candidate and this becomes
+  // the identity we can de-duplicate on — a candidate has no account, so it is
+  // the only reliable way to tell "already took this" from "new person".
+  candidate_email String?
   expires_at      DateTime
   opened_at       DateTime?   // set when candidate first clicks link
   session_id      String?     @unique  // set when session is created from this link
@@ -145,6 +149,7 @@ model AssessmentLink {
 
   session     Session?  @relation(fields: [session_id], references: [id])
 
+  @@index([assessment_id, candidate_email])
   @@map("assessment_links")
 }
 
