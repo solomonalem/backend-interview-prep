@@ -344,7 +344,7 @@ function Rubric({
         {icon}
         {label}
       </p>
-      <p className="text-sm text-slate-600 leading-relaxed">{body}</p>
+      <p className="max-w-[95ch] text-sm text-slate-600 leading-relaxed">{body}</p>
     </div>
   );
 }

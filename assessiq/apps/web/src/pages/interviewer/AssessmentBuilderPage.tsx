@@ -793,7 +793,10 @@ export default function AssessmentBuilderPage() {
                   <p className="text-xs font-medium text-brand-600">{tray.size} in this assessment</p>
                 )}
               </div>
-              <fieldset disabled={busy} className={cn('space-y-2.5', busy && 'opacity-60')}>
+              <fieldset
+                disabled={busy}
+                className={cn('grid items-start gap-2.5 2xl:grid-cols-2', busy && 'opacity-60')}
+              >
                 {results.map((q) => (
                   <div key={q.id} className="relative">
                     <QuestionCard
