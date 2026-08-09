@@ -17,6 +17,7 @@ import {
 } from '../../components/ui';
 import { assessmentsApi } from '../../api/assessments.api';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { candidateDisplayName } from '../../lib/candidateLabel';
 
 const statusMeta: Record<LinkStatus, { label: string; tone: string }> = {
   not_opened: { label: 'Not opened', tone: 'bg-slate-100 text-slate-500' },
@@ -139,10 +140,10 @@ export default function DashboardPage() {
                   to={`/assessments/${l.assessmentId}`}
                   className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition"
                 >
-                  <Avatar name={l.candidate_label ?? 'Unlabeled'} size="sm" />
+                  <Avatar name={candidateDisplayName(l)} seed={l.token} size="sm" />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-slate-800 truncate">
-                      {l.candidate_label ?? 'Unlabeled'}
+                      {candidateDisplayName(l)}
                     </p>
                     <p className="text-xs text-slate-400 truncate">{l.assessmentTitle}</p>
                   </div>

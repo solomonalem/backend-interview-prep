@@ -7,6 +7,7 @@ import {
   createLink,
   getAssessmentDetail,
   listAssessments,
+  updateLinkLabel,
 } from '../services/assessment.service.js';
 
 export const assessmentsRouter = Router();
@@ -80,5 +81,24 @@ assessmentsRouter.post(
     }
     const link = await createLink(req.interviewer!.id, id, parsed.data);
     res.status(201).json(link);
+  }),
+);
+
+// PATCH /assessments/:id/links/:linkId — rename a candidate link.
+// The label is the only thing identifying a candidate (they have no account),
+// so it has to be fixable after the link is minted.
+const updateLinkSchema = z.object({
+  candidate_label: z.string().nullable(),
+});
+
+assessmentsRouter.patch(
+  '/:id/links/:linkId',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id, linkId } = req.params;
+    if (!id || !linkId) throw new AppError(400, 'VALIDATION', 'assessment and link id are required');
+    const parsed = updateLinkSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'candidate_label is required');
+    res.json(await updateLinkLabel(req.interviewer!.id, id, linkId, parsed.data.candidate_label));
   }),
 );

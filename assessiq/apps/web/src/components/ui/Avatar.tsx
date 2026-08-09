@@ -11,12 +11,24 @@ const gradients = [
 ];
 
 function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
+  // Skip punctuation-only words so "Candidate · RC2CYO" reads as CR, not C·.
+  const parts = name.trim().split(/\s+/).filter((p) => /[a-z0-9]/i.test(p));
   return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '?';
 }
 
-export function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' | 'lg' }) {
-  const idx = name.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % gradients.length;
+export function Avatar({
+  name,
+  size = 'md',
+  seed,
+}: {
+  name: string;
+  size?: 'sm' | 'md' | 'lg';
+  /** Colour source when the display name isn't distinctive (e.g. every
+   *  unlabelled candidate reads "Candidate · …"). Defaults to `name`. */
+  seed?: string;
+}) {
+  const key = seed ?? name;
+  const idx = key.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % gradients.length;
   const sizes = { sm: 'h-7 w-7 text-[10px]', md: 'h-9 w-9 text-xs', lg: 'h-12 w-12 text-sm' };
   return (
     <span
