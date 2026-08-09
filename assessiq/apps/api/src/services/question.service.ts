@@ -4,6 +4,10 @@ import type {
   QuestionFilters,
   QuestionListItem,
   QuestionListResponse,
+  QuestionMatchFilters,
+  QuestionMatchItem,
+  QuestionMatchKey,
+  QuestionMatchResponse,
   QuestionType,
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
@@ -18,6 +22,7 @@ const PUBLIC_SELECT = {
   difficulty: true,
   type: true,
   domain: true,
+  status: true,
   core_answer_display: true,
   senior_signal_display: true,
   trap_display: true,
@@ -54,6 +59,52 @@ export async function listQuestions(f: QuestionFilters): Promise<QuestionListRes
     total,
     page,
     pages: Math.max(1, Math.ceil(total / limit)),
+  };
+}
+
+// Loose retrieval for the assessment builder (Stage A). A question surfaces if
+// it matches AT LEAST ONE of technology/seniority/type, ranked by how many it
+// matched. Strict AND across all three returns nothing useful against a small
+// bank, which is the failure mode this route exists to avoid.
+//
+// Ranking happens in memory because the score is a count of OR-branch hits,
+// which Prisma cannot express. Fine at bank scale (tens–hundreds); if the bank
+// grows past a few thousand this needs a SQL-side score.
+export async function matchQuestions(f: QuestionMatchFilters): Promise<QuestionMatchResponse> {
+  const limit = Math.min(100, Math.max(1, f.limit ?? 50));
+  const terms = f.technology.map((t) => t.trim().toLowerCase()).filter(Boolean);
+  const types = f.type?.length ? f.type : undefined;
+
+  const or: Prisma.QuestionWhereInput[] = [
+    ...terms.map((t) => ({ topic: { contains: t, mode: 'insensitive' as const } })),
+    { difficulty: f.seniority as Difficulty },
+  ];
+  if (types) or.push({ type: { in: types as QuestionType[] } });
+
+  const rows = await prisma.question.findMany({
+    where: { is_active: true, OR: or },
+    select: PUBLIC_SELECT,
+    orderBy: { created_at: 'asc' },
+  });
+
+  const scored: QuestionMatchItem[] = rows.map((q) => {
+    const matched_on: QuestionMatchKey[] = [];
+    // Bidirectional contains so "node" matches "Node.js" and vice versa.
+    const topic = q.topic.toLowerCase();
+    if (terms.some((t) => topic.includes(t) || t.includes(topic))) matched_on.push('topic');
+    if (q.difficulty === f.seniority) matched_on.push('difficulty');
+    if (types?.includes(q.type as QuestionType)) matched_on.push('type');
+    return { ...(q as QuestionListItem), matched_on, match_score: matched_on.length };
+  });
+
+  // Sort is stable, so equal scores keep the created_at ordering from the query.
+  scored.sort((a, b) => b.match_score - a.match_score);
+
+  return {
+    questions: scored.slice(0, limit),
+    total: scored.length,
+    page: 1,
+    pages: Math.max(1, Math.ceil(scored.length / limit)),
   };
 }
 

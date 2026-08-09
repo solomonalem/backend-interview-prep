@@ -40,6 +40,20 @@ export const api = {
       body: data !== undefined ? JSON.stringify(data) : undefined,
       headers,
     }),
+  patch: <T>(path: string, data?: unknown, headers?: Headers) =>
+    request<T>(path, {
+      method: 'PATCH',
+      body: data !== undefined ? JSON.stringify(data) : undefined,
+      headers,
+    }),
+  put: <T>(path: string, data?: unknown, headers?: Headers) =>
+    request<T>(path, {
+      method: 'PUT',
+      body: data !== undefined ? JSON.stringify(data) : undefined,
+      headers,
+    }),
+  del: <T = null>(path: string, headers?: Headers) =>
+    request<T>(path, { method: 'DELETE', headers }),
 };
 
 // Authorization header for candidate session calls (Bearer token, not cookie).

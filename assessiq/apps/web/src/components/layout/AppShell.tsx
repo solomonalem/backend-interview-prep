@@ -3,7 +3,6 @@ import {
   LayoutDashboard,
   Library,
   FilePlus2,
-  BarChart3,
   GraduationCap,
   BookOpenCheck,
   Timer,
@@ -27,7 +26,6 @@ const interviewerNav: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
   { to: '/bank', label: 'Question Bank', icon: <Library size={18} /> },
   { to: '/build', label: 'New Assessment', icon: <FilePlus2 size={18} /> },
-  { to: '/reports/c1', label: 'Reports', icon: <BarChart3 size={18} /> },
 ];
 
 const studyNav: NavItem[] = [
@@ -129,7 +127,18 @@ export default function AppShell() {
 
       {/* Content */}
       <main className="flex-1 ml-64 min-w-0">
-        <div className="max-w-6xl mx-auto px-8 py-8 animate-fade-in">
+        {/*
+          Fills the viewport rather than sitting in a 1152px column — these are
+          dense working screens (question pools, candidate tables, builders),
+          and the old max-w-6xl left ~250px dead on each side of a 1080p
+          display while the content below scrolled.
+
+          The cap is deliberately high rather than absent: past ~1800px a card
+          row stops being scannable in one sweep and long prose lines get hard
+          to track. Padding grows with the viewport so content never runs into
+          the edge.
+        */}
+        <div className="mx-auto w-full max-w-[1800px] px-6 py-6 lg:px-8 xl:px-10 animate-fade-in">
           <Outlet />
         </div>
       </main>

@@ -3,7 +3,7 @@ import { anthropic, SCORING_MODEL } from '../lib/claude.js';
 import { confidenceFlag, weightedTotal } from '../utils/score-calc.js';
 import { compileReport } from './report.service.js';
 
-interface ScoreResult {
+export interface ScoreResult {
   core_pct: number;
   core_reasoning: string;
   senior_signal_pct: number;
@@ -105,6 +105,25 @@ async function callClaude(system: string, user: string): Promise<ScoreResult> {
   return parseScore(block.text);
 }
 
+// Core scorer — Claude when a key is configured, deterministic stub otherwise.
+// Reused by the async worker (below) and synchronous practice mode.
+export async function scoreAnswerText(
+  q: {
+    text: string;
+    core_answer_guide: string;
+    senior_signal_guide: string;
+    trap_guide: string;
+    evidence_guide: string;
+  },
+  answerText: string,
+  seed = 'seed',
+): Promise<{ result: ScoreResult; modelUsed: string }> {
+  if (anthropic) {
+    return { result: await callClaude(SYSTEM_PROMPT, buildUserPrompt(q, answerText)), modelUsed: SCORING_MODEL };
+  }
+  return { result: stubScore(answerText, seed), modelUsed: 'stub-dev' };
+}
+
 // Score one answer and persist a Score row. Throws on failure (BullMQ retries).
 export async function scoreAnswer(answerId: string): Promise<void> {
   const answer = await prisma.answer.findUnique({
@@ -119,17 +138,7 @@ export async function scoreAnswer(answerId: string): Promise<void> {
 
   await prisma.answer.update({ where: { id: answerId }, data: { scoring_status: 'scoring' } });
 
-  const q = answer.question;
-  let result: ScoreResult;
-  let modelUsed: string;
-
-  if (anthropic) {
-    result = await callClaude(SYSTEM_PROMPT, buildUserPrompt(q, answer.text));
-    modelUsed = SCORING_MODEL;
-  } else {
-    result = stubScore(answer.text, answer.id);
-    modelUsed = 'stub-dev';
-  }
+  const { result, modelUsed } = await scoreAnswerText(answer.question, answer.text, answer.id);
 
   const total = weightedTotal(
     result.core_pct,

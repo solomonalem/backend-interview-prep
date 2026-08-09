@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type {
   AssessmentDetail,
+  AssessmentDetailLink,
   AssessmentListResponse,
   CreateAssessmentRequest,
   CreateAssessmentResponse,
@@ -192,6 +193,63 @@ export async function getAssessmentDetail(
 }
 
 // ── POST /assessments/:id/links ──────────────────────────────────────────────
+/**
+ * "Candidate 1", "Candidate 2", … scoped to the assessment.
+ *
+ * A candidate has no account — the label is the only thing distinguishing one
+ * link from another — so an unnamed link used to be indistinguishable from
+ * every other unnamed link. This gives it a handle without making the field
+ * mandatory, since the quick "just send me a link" path depends on being able
+ * to skip it. The manager can rename it afterwards.
+ *
+ * Counts upward past names already in use, so it never collides with a manual
+ * label or a gap left by a deleted link.
+ */
+async function nextDefaultLabel(assessmentId: string): Promise<string> {
+  const existing = await prisma.assessmentLink.findMany({
+    where: { assessment_id: assessmentId },
+    select: { candidate_label: true },
+  });
+  const taken = new Set(
+    existing.map((l) => l.candidate_label?.trim().toLowerCase()).filter(Boolean) as string[],
+  );
+  for (let n = existing.length + 1; ; n++) {
+    const candidate = `Candidate ${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/**
+ * Rename a candidate link. Passing null clears the label back to the
+ * unlabelled fallback — the ~10 links created before defaults existed can be
+ * given real names this way.
+ */
+export async function updateLinkLabel(
+  ownerId: string,
+  assessmentId: string,
+  linkId: string,
+  candidateLabel: string | null,
+): Promise<AssessmentDetailLink> {
+  const link = await prisma.assessmentLink.findFirst({
+    where: { id: linkId, assessment_id: assessmentId, assessment: { owner_id: ownerId } },
+    select: { id: true },
+  });
+  if (!link) throw new AppError(404, 'LINK_NOT_FOUND', 'Candidate link not found');
+
+  const trimmed = candidateLabel?.trim();
+  await prisma.assessmentLink.update({
+    where: { id: linkId },
+    data: { candidate_label: trimmed ? trimmed : null },
+  });
+
+  // Re-read through the detail path so the caller gets the same shape (and
+  // derived status) as everywhere else rather than a hand-built object.
+  const detail = await getAssessmentDetail(ownerId, assessmentId);
+  const updated = detail.links.find((l) => l.id === linkId);
+  if (!updated) throw new AppError(404, 'LINK_NOT_FOUND', 'Candidate link not found');
+  return updated;
+}
+
 export async function createLink(
   ownerId: string,
   assessmentId: string,
@@ -219,7 +277,9 @@ export async function createLink(
     data: {
       token,
       assessment_id: assessmentId,
-      candidate_label: input.candidate_label ?? null,
+      candidate_label: input.candidate_label?.trim()
+        ? input.candidate_label.trim()
+        : await nextDefaultLabel(assessmentId),
       expires_at: expiresAt,
     },
   });
@@ -228,6 +288,7 @@ export async function createLink(
   return {
     id: link.id,
     token: link.token,
+    candidate_label: link.candidate_label,
     url: `${baseUrl}/a/${link.token}`,
     expires_at: link.expires_at.toISOString(),
   };

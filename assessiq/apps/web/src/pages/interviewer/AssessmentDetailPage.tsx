@@ -9,6 +9,7 @@ import {
   Link2,
   ArrowUpRight,
   ListChecks,
+  Pencil,
 } from 'lucide-react';
 import type { AssessmentDetail, LinkStatus } from '@assessiq/types';
 import {
@@ -26,6 +27,9 @@ import {
   difficultyTone,
 } from '../../components/ui';
 import { assessmentsApi } from '../../api/assessments.api';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { candidateDisplayName, isUnlabeled } from '../../lib/candidateLabel';
+import { cn } from '../../lib/cn';
 import { ApiRequestError } from '../../api/client';
 
 const statusMeta: Record<LinkStatus, { label: string; tone: string }> = {
@@ -47,6 +51,11 @@ export default function AssessmentDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [label, setLabel] = useState('');
+  // Inline rename — the label is the only handle on a candidate, so it has to
+  // be fixable after the link exists.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
 
@@ -64,6 +73,24 @@ export default function AssessmentDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A candidate can submit at any moment; reflect it without a manual reload.
+  useLiveRefresh(load);
+
+  const saveRename = async (linkId: string) => {
+    if (!id || renaming) return;
+    setRenaming(true);
+    try {
+      // Empty clears the label, falling back to the generated handle.
+      await assessmentsApi.updateLink(id, linkId, renameDraft.trim() || null);
+      setRenamingId(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not rename this candidate');
+    } finally {
+      setRenaming(false);
+    }
+  };
 
   const generate = async () => {
     if (!id) return;
@@ -184,12 +211,56 @@ export default function AssessmentDetailPage() {
           <div className="divide-y divide-slate-100">
             {links.map((l) => {
               const meta = statusMeta[l.status];
-              const name = l.candidate_label ?? 'Unlabeled';
+              const name = candidateDisplayName(l);
+              const editing = renamingId === l.id;
               return (
                 <div key={l.id} className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition">
-                  <Avatar name={name} size="sm" />
+                  <Avatar name={name} seed={l.token} size="sm" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-800 truncate">{name}</p>
+                    {editing ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          autoFocus
+                          value={renameDraft}
+                          placeholder="Candidate name"
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void saveRename(l.id);
+                            if (e.key === 'Escape') setRenamingId(null);
+                          }}
+                          className="h-8 py-1 text-sm"
+                        />
+                        <Button size="sm" onClick={() => void saveRename(l.id)} disabled={renaming}>
+                          {renaming ? <Spinner className="border-white/40 border-t-white" /> : 'Save'}
+                        </Button>
+                        <Button size="sm" variant="secondary" onClick={() => setRenamingId(null)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRenamingId(l.id);
+                          setRenameDraft(l.candidate_label ?? '');
+                        }}
+                        title="Rename this candidate"
+                        className="group flex items-center gap-1.5 text-left"
+                      >
+                        <span
+                          className={cn(
+                            'text-sm font-medium truncate',
+                            isUnlabeled(l) ? 'text-slate-500 italic' : 'text-slate-800',
+                          )}
+                        >
+                          {name}
+                        </span>
+                        <Pencil
+                          size={12}
+                          className="shrink-0 text-slate-300 group-hover:text-brand-500"
+                        />
+                      </button>
+                    )}
                     <code className="text-xs text-slate-400 font-mono truncate block">
                       /a/{l.token}
                     </code>

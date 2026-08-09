@@ -78,49 +78,61 @@ assessiq/
 
 ---
 
-## Current status — Phase 0, Weeks 1–2 COMPLETE ✅
+## Current status — v1.0.0 TAGGED ✅
 
-Per `docs/10-mvp-scope.md` build order.
+`v1.0.0` is an annotated tag on `main`. `main` and `develop` are in sync at that
+point. It is the first complete two-sided release: an interviewer can go from a
+job description to a scored report without manual intervention, and a job seeker
+can study the same bank.
 
-**Week 1 (scaffold):**
-- [x] Monorepo (apps/web, apps/api, packages/types), Docker Compose (postgres+redis)
-- [x] Prisma schema + initial migration (all 13 tables), 10 seeded questions
-- [x] Express `/health` route; web app builds (tsc + vite + Tailwind)
+### Interviewer flow (Hire mode)
+- **Auth** — email+password (scrypt) + Google OAuth exchange, JWT in an httpOnly
+  `assessiq_token` cookie, `authInterviewer` middleware. Routes at `/api/v1`.
+- **Three on-ramps into a position**, all converging on the same search:
+  paste a JD (decoded by Claude Haiku, with a domain gate that rejects
+  non-software roles by name), pick a supported role preset, or type
+  technologies by hand.
+- **Bank-first question pool** — on-topic bank matches (vetted + draft) return
+  instantly; AI generation fires only when a topic has fewer than 3, topping up
+  to 5. A short seniority-only tail adds breadth without suppressing generation.
+- **AI generation with mandatory human review** — every generated question is
+  persisted as `status: draft` with a full four-part rubric. A draft can only
+  reach an assessment through the review panel (question + all four rubric
+  components, `_display` and `_guide` both editable), where Approve promotes it
+  to `vetted`. Refine revises in place; Reject sets `is_active: false`.
+  Managers can also write their own question and have the AI draft its rubric.
+- **Selection tray** — the single source of truth for an assessment. Nothing is
+  ever auto-selected.
+- **Candidate links** — signed token URLs, no candidate account. Auto-named
+  `Candidate N`, renameable afterwards.
+- **Proctored timed sessions** — one question at a time, passive tab/focus/paste/
+  idle events, explicit "Time's up" on expiry.
+- **Async scoring + reports** — BullMQ + Redis worker scores each answer with
+  Claude at `temperature: 0` against the rubric; reports show overall/component
+  averages, verdict, proctoring context, and per-question breakdown including
+  questions the candidate never answered. Emailed to the interviewer via Resend.
 
-**Week 2 (auth + questions):**
-- [x] Auth: `POST /auth/login` (email+password, scrypt), `POST /auth/google` (OAuth
-      exchange — needs real creds), `POST /auth/logout`, `GET /auth/me`. JWT in httpOnly
-      `assessiq_token` cookie. Routes mounted at **`/api/v1`**.
-- [x] `authInterviewer` middleware (verifies cookie → `req.interviewer`)
-- [x] `GET /questions` (topic/difficulty/type/domain/search + pagination) and
-      `GET /questions/:id` — both strip `_guide` fields (verified not leaked)
-- [x] Shared types in `packages/types` (source-resolvable via `exports: ./src/index.ts`)
-- [x] Frontend: API client (cookie-based), `useAuth` context, LoginPage,
-      ProtectedRoute, QuestionBankPage (list + filter + expandable rubric)
-- [x] Dev interviewer seeded for local login: **`dev@assessiq.local` / `password123`**
-- [x] Verified end-to-end through the Vite proxy (login → cookie → questions)
+### Job-seeker flow (Prepare mode)
+Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
+AI tagging, and JD decode — all on the same question bank, using only the
+`_display` rubric fields.
 
-Both apps type-check clean (`tsc --noEmit`). **Core-loop Steps 1–2 done:**
-- **Step 1** — assessments + links backend, with Builder/Detail/Dashboard wired (real create → link → live statuses).
-- **Step 2** — candidate session backend + wired screens: validate link → timed one-at-a-time
-  session → passive proctoring events → submit. Link status flips to `submitted`.
-- **Step 3** — AI scoring: BullMQ + Redis scoring queue/worker (`workers/`, run via
-  `npm run dev:worker`), `scoring.service` (Claude `claude-sonnet-4-6` @ temp 0, with a dev stub
-  when no API key), `report.service` (compiles overall %, verdict, proctoring counts on completion).
-  Enqueued per answer on submit. Real Score + Report rows now exist; link `overall_score` populates.
+### Model roles
+| Task | Model | Why |
+|---|---|---|
+| Rubric scoring | `claude-sonnet-4-6` @ temp 0 | determinism required by docs/04 |
+| Question + rubric generation | `claude-sonnet-4-6` @ temp 0.7 | judgement task; variety wanted |
+| JD decode, story tagging | `claude-haiku-4-5` | cheap peripheral work |
 
-**Not yet built (backend):** the real report API + wiring the mock ReportPage to it, PDF (Puppeteer),
-and email (Resend) — Step 4.
+All overridable via `SCORING_MODEL` / `GENERATION_MODEL` / `DECODE_MODEL` /
+`TAGGING_MODEL`. No `ANTHROPIC_API_KEY` → scoring falls back to a dev stub and
+decode to a keyword heuristic (both self-identify via `source`); generation has
+no stub and fails loudly, because a fabricated rubric is indistinguishable from
+a real one.
 
-**Frontend UI redesign (done, ahead of backend):** Modern-SaaS indigo design system
-(`components/ui/*` primitives, `components/layout/AppShell` with a Hire⇄Prepare mode
-switch, Inter + lucide-react). **All screens for all three modes are built** and routed:
-- Interviewer: Dashboard, Question Bank (real API), Assessment Builder, Assessment Detail, Report
-- Job seeker: Study Dashboard, Review Cards, Timed Practice, Story Bank, Target-a-Role
-- Candidate: Link Landing, Session (timer), Submitted
-Screens without a backend yet run on **mock data in `apps/web/src/data/mock.ts`** (shapes
-mirror docs/08) — swap for real endpoints as each backend lands. Auth + question bank use
-the real API. Full app builds clean (`npm run build --workspace=apps/web`).
+**Not in v1.0.0:** PDF export (Puppeteer → R2; the `pdf_url`/`pdf_status` columns
+exist), team accounts, analytics, a "reuse questions I've sent before" view,
+automated tests, and production deploy/auth hardening.
 
 ---
 
@@ -203,31 +215,22 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ---
 
-## Next steps — Core loop Step 4: real report + notifications
+## Next steps — post-v1.0.0
 
-Scores + reports now exist in the DB. Step 4 exposes them and closes the loop.
+Nothing is half-finished; these are the deliberate v1 exclusions, roughly in
+value order.
 
-1. **`GET /reports/session/:id`** (authInterviewer, must own the assessment) — compile the full
-   report response from `docs/08` (session, overall + component avgs, proctoring counts + timeline
-   from `behavior_events`, per-question score breakdown with hit/miss + probe + confidence flag).
-   Return `202 { status: 'scoring_in_progress', ... }` if the Report row doesn't exist yet.
-2. **Wire the mock `ReportPage`** (`apps/web/.../interviewer/ReportPage.tsx`) to it, and point the
-   Detail/Dashboard "View report" links at the real session id (they already link to `/reports/:id`).
-3. **Email on report ready** (Resend) — send the interviewer a link when `compileReport` finishes
-   (there's a `TODO (Step 4)` marker in `report.service.ts`).
-4. **PDF** (Puppeteer → R2) — deferred/optional; the `pdf_url`/`pdf_status` columns already exist.
-
-To score for real (not the stub), set `ANTHROPIC_API_KEY` in `apps/api/.env` and run the worker
-(`npm run dev:worker`).
-
-**Reusable pieces in place:** `AppError`/`asyncHandler`, `authInterviewer`/`authCandidate`,
-`generateToken`, the zod-validate-then-service route shape, `deriveLinkStatus`/`linkOverallScore`,
-`prisma` singleton, score-calc utils, the scoring queue/worker, the frontend `api` client (+`bearer`)
-/ `useAuth` / candidate store, and the already-built mock `ReportPage` to wire up.
-
-**Phase 0 is "done" when** an interviewer can build a 5-question assessment, a candidate
-takes it via link, Claude scores it in the background, and the interviewer gets an
-emailed report — with zero manual intervention. (`docs/10-mvp-scope.md` "The MVP Test".)
+1. **Automated tests.** There are still none — Phase 0 was manual by design
+   (`docs/10-mvp-scope.md`). The highest-value first targets are the scoring
+   maths (`score-calc`), the pool thresholds in `generation.service`, and the
+   `_guide`-never-leaks guarantee.
+2. **PDF export** (Puppeteer → R2). Columns exist; Chromium download is skipped
+   locally via `.npmrc` (`npx puppeteer browsers install chrome` to enable).
+3. **Deploy + auth hardening** — Railway per `docs/06`, real Google OAuth
+   credentials, rate limiting.
+4. **Reuse view** — "questions I've sent before", the deferred Stage C.
+5. **Generation dedup.** Batched generation calls don't see each other's output,
+   so one request can produce near-duplicate drafts (measured ~1 in 15).
 
 ---
 

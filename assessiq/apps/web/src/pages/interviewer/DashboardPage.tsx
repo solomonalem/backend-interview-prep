@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, CheckCircle2, Gauge, FileText, Plus, Inbox, FilePlus2 } from 'lucide-react';
 import type { AssessmentListItem, LinkStatus } from '@assessiq/types';
@@ -16,6 +16,8 @@ import {
   EmptyState,
 } from '../../components/ui';
 import { assessmentsApi } from '../../api/assessments.api';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { candidateDisplayName } from '../../lib/candidateLabel';
 
 const statusMeta: Record<LinkStatus, { label: string; tone: string }> = {
   not_opened: { label: 'Not opened', tone: 'bg-slate-100 text-slate-500' },
@@ -33,12 +35,22 @@ export default function DashboardPage() {
   const [assessments, setAssessments] = useState<AssessmentListItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    assessmentsApi
-      .list()
-      .then((r) => setAssessments(r.assessments))
-      .finally(() => setLoading(false));
+  const load = useCallback(async () => {
+    try {
+      const r = await assessmentsApi.list();
+      setAssessments(r.assessments);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Candidate submissions land while the interviewer is elsewhere, so keep the
+  // statuses current instead of waiting for a manual reload.
+  useLiveRefresh(load);
 
   const allLinks = assessments.flatMap((a) =>
     a.links.map((l) => ({ ...l, assessmentTitle: a.title, assessmentId: a.id })),
@@ -128,10 +140,10 @@ export default function DashboardPage() {
                   to={`/assessments/${l.assessmentId}`}
                   className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition"
                 >
-                  <Avatar name={l.candidate_label ?? 'Unlabeled'} size="sm" />
+                  <Avatar name={candidateDisplayName(l)} seed={l.token} size="sm" />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-slate-800 truncate">
-                      {l.candidate_label ?? 'Unlabeled'}
+                      {candidateDisplayName(l)}
                     </p>
                     <p className="text-xs text-slate-400 truncate">{l.assessmentTitle}</p>
                   </div>

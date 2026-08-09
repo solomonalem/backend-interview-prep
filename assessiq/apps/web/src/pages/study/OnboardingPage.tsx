@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Sparkles, Wand2, FileText, ArrowRight, Layers } from 'lucide-react';
+import { Sparkles, Wand2, FileText, ArrowRight, Layers, AlertTriangle } from 'lucide-react';
 import {
   Badge,
   Button,
@@ -13,72 +13,39 @@ import {
   Spinner,
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
+import { HeuristicNote, NoMatchNotice } from '../../components/DecodeNotices';
+import { studyApi } from '../../api/study.api';
+import { ApiRequestError } from '../../api/client';
+import type { DecodeJdResponse, JdWeight } from '@assessiq/types';
 
-type Weight = 'Critical' | 'High' | 'Differentiator' | 'Low';
-
-const weightTone: Record<Weight, 'rose' | 'amber' | 'violet' | 'slate'> = {
+const weightTone: Record<JdWeight, 'rose' | 'amber' | 'violet' | 'slate'> = {
   Critical: 'rose',
   High: 'amber',
   Differentiator: 'violet',
   Low: 'slate',
 };
 
-interface DecodedTopic {
-  topic: string;
-  weight: Weight;
-  questions: number;
-}
-
-interface Decoded {
-  role: string;
-  domain: string;
-  topics: DecodedTopic[];
-}
-
-const BASE_TOPICS: DecodedTopic[] = [
-  { topic: 'Node.js', weight: 'Critical', questions: 14 },
-  { topic: 'MongoDB', weight: 'High', questions: 11 },
-  { topic: 'Security & JWT', weight: 'Critical', questions: 9 },
-  { topic: 'Microservices', weight: 'High', questions: 8 },
-  { topic: 'System Design', weight: 'Differentiator', questions: 7 },
-  { topic: 'Healthcare / PHI', weight: 'Low', questions: 5 },
-];
-
-// Lightweight, deterministic "decode" of a pasted JD (no real backend yet).
-function decode(jd: string): Decoded {
-  const text = jd.toLowerCase();
-  const isHealth = /health|phi|hipaa|clinical|patient|medical/.test(text);
-  const isSenior = /senior|lead|staff|principal/.test(text);
-
-  const topics = BASE_TOPICS.map((t) =>
-    t.topic === 'Healthcare / PHI'
-      ? { ...t, weight: (isHealth ? 'Critical' : 'Low') as Weight, questions: isHealth ? 10 : 5 }
-      : t.topic === 'System Design'
-        ? { ...t, weight: (isSenior ? 'Critical' : 'Differentiator') as Weight }
-        : t,
-  );
-
-  return {
-    role: isSenior ? 'Senior Backend Engineer' : 'Backend Engineer',
-    domain: isHealth ? 'healthcare' : 'general',
-    topics,
-  };
-}
-
 export default function OnboardingPage() {
   const [jd, setJd] = useState('');
-  const [resume, setResume] = useState('');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<Decoded | null>(null);
+  const [result, setResult] = useState<DecodeJdResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  function run() {
+  async function run() {
     if (!jd.trim()) return;
     setLoading(true);
     setResult(null);
-    setTimeout(() => {
-      setResult(decode(jd));
+    setError(null);
+    try {
+      const data = await studyApi.decodeJd(jd);
+      setResult(data);
+    } catch (e) {
+      setError(
+        e instanceof ApiRequestError ? e.message : 'Could not decode this job description.',
+      );
+    } finally {
       setLoading(false);
-    }, 1200);
+    }
   }
 
   return (
@@ -110,18 +77,10 @@ export default function OnboardingPage() {
               onChange={(e) => setJd(e.target.value)}
             />
           </div>
-          <div>
-            <Label>Your resume or key bullets (optional)</Label>
-            <Textarea
-              rows={4}
-              placeholder="Paste a few resume bullets so we can tailor to your experience…"
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
-            />
-          </div>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <p className="flex items-center gap-1.5 text-xs text-slate-400">
-              <FileText size={13} /> Nothing is stored — this runs on your device.
+              <FileText size={13} className="shrink-0" />
+              Sent to our server and an AI provider to decode it. We don't store it.
             </p>
             <Button onClick={run} disabled={!jd.trim() || loading}>
               {loading ? (
@@ -135,11 +94,25 @@ export default function OnboardingPage() {
               )}
             </Button>
           </div>
+          {error && (
+            <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              <AlertTriangle size={15} className="shrink-0" />
+              {error}
+            </div>
+          )}
         </CardBody>
       </Card>
 
-      {result && (
+      {result && !result.matched && (
+        <NoMatchNotice
+          detectedDomain={result.detected_domain}
+          action="Try a tech role like backend engineering."
+        />
+      )}
+
+      {result?.matched && (
         <div className="animate-fade-in space-y-6">
+          {result.source === 'heuristic' && <HeuristicNote />}
           <Card>
             <CardHeader>
               <div className="flex items-center gap-3">
@@ -147,11 +120,11 @@ export default function OnboardingPage() {
                   <Sparkles size={18} />
                 </span>
                 <div>
-                  <h3 className="font-semibold text-slate-800">{result.role}</h3>
+                  <h3 className="font-semibold text-slate-800">{result.role_title}</h3>
                   <p className="text-xs text-slate-400">Decoded from your job description</p>
                 </div>
               </div>
-              <Badge tone={result.domain === 'healthcare' ? 'sky' : 'slate'}>{result.domain}</Badge>
+              <Badge tone={result.domain ? 'sky' : 'slate'}>{result.domain ?? 'General'}</Badge>
             </CardHeader>
             <CardBody className="space-y-2.5">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">
@@ -170,7 +143,7 @@ export default function OnboardingPage() {
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
                     <span className="text-xs text-slate-400 tabular w-20 text-right hidden sm:block">
-                      {t.questions} questions
+                      {t.question_count} questions
                     </span>
                     <Badge tone={weightTone[t.weight]} className={cn('w-28 justify-center')}>
                       {t.weight}
