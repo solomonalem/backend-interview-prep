@@ -138,14 +138,18 @@ export interface QuestionPoolRequest {
   technology: string[];
   seniority: Difficulty;
   type?: QuestionType[];
-  /** Minimum size of the pool to present. Defaults to 15. */
+  /**
+   * On-topic questions to aim for when the bank is too thin to serve this
+   * topic. Defaults to 5. Ignored when the bank already has enough — the pool
+   * is not padded to a fixed size.
+   */
   target?: number;
   /** false to show bank matches only, with no generation. */
   generate?: boolean;
 }
 
 export interface QuestionPoolResponse {
-  /** Topic-relevant bank matches, then generated, then seniority-only matches. */
+  /** On-topic bank matches, then generated drafts, then a short loose tail. */
   questions: QuestionMatchItem[];
   /** Bank matches that actually matched the topic. Only these count toward the target. */
   relevant_count: number;

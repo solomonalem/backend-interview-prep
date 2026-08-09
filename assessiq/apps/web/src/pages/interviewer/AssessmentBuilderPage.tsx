@@ -144,9 +144,9 @@ function seniorityFromRole(roleTitle: string): Difficulty | null {
 // query so broad that the ranking stops meaning anything.
 const MAX_AUTOFILL_TOPICS = 4;
 
-// Minimum size of the pool the manager chooses from. Anything the bank cannot
-// supply is generated for review — never auto-selected.
-const POOL_TARGET = 15;
+// The pool is bank-first: the server returns what the bank has and only
+// generates when this topic is nearly uncovered. No fixed pool size — padding
+// to a number meant every search on a covered topic paid for generation.
 
 export default function AssessmentBuilderPage() {
   const navigate = useNavigate();
@@ -298,7 +298,6 @@ export default function AssessmentBuilderPage() {
         technology: tech,
         seniority: seniority as Difficulty,
         ...(types.length ? { type: types } : {}),
-        target: POOL_TARGET,
         generate,
       });
       setResults(r.questions);

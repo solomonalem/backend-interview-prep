@@ -449,42 +449,60 @@ export async function rejectDraft(id: string, interviewerId: string): Promise<vo
   await prisma.question.update({ where: { id }, data: { is_active: false } });
 }
 
-const DEFAULT_POOL_TARGET = 15;
+// Bank-first thresholds.
+//
+// At or above GENERATE_BELOW on-topic questions the bank is considered to have
+// enough to choose from and NOTHING is generated — that search returns in
+// milliseconds. Below it, top up to ON_TOPIC_TARGET so the manager always has
+// a few real options. Generation is the expensive path (~90s and a Claude call
+// per topic), so it is reserved for topics the bank genuinely cannot serve.
+const GENERATE_BELOW = 3;
+const ON_TOPIC_TARGET = 5;
+// Seniority-only matches are related breadth, not answers to the question that
+// was asked. Kept short so they cannot dominate the pool.
+const MAX_LOOSE_TAIL = 5;
 
 /**
- * Build the pool the manager picks from: bank matches first, topped up with
- * freshly generated drafts only if the bank cannot fill it.
+ * Build the pool the manager picks from, bank-first.
+ *
+ * Show what the bank has immediately; pay for generation only when the bank is
+ * nearly empty on this topic. There is no fixed pool size — padding to a
+ * number meant every search on a covered topic still cost a generation round.
  *
  * Nothing here is selected — this populates the POOL, not the assessment. The
- * manager still chooses every question, and a generated one additionally has
- * to go through review before it can be used.
+ * manager still chooses every question, and a draft additionally has to pass
+ * review before it can be used.
  *
- * Generating up to a full pool is AI-heavy against an empty bank. That is
- * expected and self-correcting: every approved question becomes a vetted bank
- * match, so the shortfall shrinks with use.
+ * Self-correcting: every approved draft becomes a vetted on-topic match, so a
+ * topic stops triggering generation once it has been used a few times.
  */
 export async function buildQuestionPool(
   input: QuestionPoolRequest,
   interviewerId: string,
 ): Promise<QuestionPoolResponse> {
-  const target = Math.min(30, Math.max(1, input.target ?? DEFAULT_POOL_TARGET));
+  // `target` is honoured when a caller passes one (used by "generate more"),
+  // otherwise the bank-first thresholds decide.
+  const onTopicTarget = Math.min(15, Math.max(1, input.target ?? ON_TOPIC_TARGET));
   const bank = await matchQuestions({
     technology: input.technology,
     seniority: input.seniority,
     ...(input.type?.length ? { type: input.type } : {}),
-    // Headroom so the loose tail survives alongside a full set of relevant hits.
-    limit: Math.min(100, target * 2),
+    // Enough headroom for every on-topic hit plus a short loose tail.
+    limit: 100,
   });
 
-  // ONLY topic matches count toward the target. Seniority-only matches are
-  // shown as extra breadth but must never satisfy the target: a bank with 16
-  // senior questions would otherwise fill a GraphQL search with Kafka and
-  // Redis and suppress generation permanently, which is the opposite of what
-  // filling the pool is for.
+  // ONLY topic matches count. Seniority-only matches are shown as breadth but
+  // must never satisfy the threshold: a bank with 16 senior questions would
+  // otherwise fill a GraphQL search with Kafka and Redis and suppress
+  // generation permanently.
   const relevant = bank.questions.filter((q) => q.matched_on.includes('topic'));
-  const loose = bank.questions.filter((q) => !q.matched_on.includes('topic')).slice(0, target);
+  const loose = bank.questions
+    .filter((q) => !q.matched_on.includes('topic'))
+    .slice(0, MAX_LOOSE_TAIL);
 
-  const shortfall = target - relevant.length;
+  // The bank has enough on this topic — return instantly, generate nothing.
+  // "Generate more with AI" remains available on demand.
+  const shortfall = relevant.length >= GENERATE_BELOW ? 0 : onTopicTarget - relevant.length;
   if (input.generate === false || shortfall <= 0) {
     return {
       questions: [...relevant, ...loose],
