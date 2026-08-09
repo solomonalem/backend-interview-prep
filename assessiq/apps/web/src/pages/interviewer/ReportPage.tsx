@@ -243,7 +243,7 @@ export default function ReportPage() {
           </div>
           <div className="flex items-start gap-3 rounded-lg bg-slate-50 p-4">
             <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-500" />
-            <p className="text-sm text-slate-600 leading-relaxed">{proctoring.context_note}</p>
+            <p className="max-w-[95ch] text-sm text-slate-600 leading-relaxed">{proctoring.context_note}</p>
           </div>
         </CardBody>
       </Card>
@@ -318,7 +318,7 @@ export default function ReportPage() {
                 ) : (
                   <div className="rounded-lg bg-slate-50 p-3.5">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Answer</p>
-                    <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
+                    <p className="max-w-[95ch] text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
                       {q.answer.text || <span className="italic text-slate-400">No answer provided</span>}
                     </p>
                   </div>
