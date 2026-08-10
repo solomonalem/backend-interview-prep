@@ -2,7 +2,12 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
-import { getQuestionById, listQuestions, matchQuestions } from '../services/question.service.js';
+import {
+  getQuestionById,
+  listPreviouslyUsed,
+  listQuestions,
+  matchQuestions,
+} from '../services/question.service.js';
 import {
   approveDraft,
   buildQuestionPool,
@@ -64,6 +69,22 @@ questionsRouter.get(
     }
     const { type, ...rest } = parsed.data;
     res.json(await matchQuestions({ ...rest, ...(type.length ? { type } : {}) }));
+  }),
+);
+
+const previouslyUsedSchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
+// GET /questions/previously-used — vetted questions this manager has already
+// used in an assessment, most-recently-used first. Before '/:id', like /match.
+questionsRouter.get(
+  '/previously-used',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = previouslyUsedSchema.safeParse(req.query);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid query parameters');
+    res.json(await listPreviouslyUsed(req.interviewer!.id, parsed.data.limit));
   }),
 );
 
