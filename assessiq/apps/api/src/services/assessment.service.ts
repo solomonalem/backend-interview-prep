@@ -7,6 +7,8 @@ import type {
   CreateAssessmentResponse,
   CreateLinkRequest,
   CreateLinkResponse,
+  DuplicateCandidate,
+  InviteEmailStatus,
   Difficulty,
   LinkStatus,
   ProctoringConfig,
@@ -15,6 +17,7 @@ import type {
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { generateToken } from '../utils/token.js';
+import { sendCandidateInvite } from './email.service.js';
 
 const DEFAULT_EXPIRES_HOURS = 168; // 7 days
 
@@ -122,6 +125,7 @@ export async function listAssessments(ownerId: string): Promise<AssessmentListRe
         id: link.id,
         token: link.token,
         candidate_label: link.candidate_label,
+        candidate_email: link.candidate_email,
         status: deriveLinkStatus(link),
         overall_score: linkOverallScore(link),
       })),
@@ -174,6 +178,7 @@ export async function getAssessmentDetail(
         id: link.id,
         token: link.token,
         candidate_label: link.candidate_label,
+        candidate_email: link.candidate_email,
         expires_at: link.expires_at.toISOString(),
         status,
         ...(link.session
@@ -250,6 +255,43 @@ export async function updateLinkLabel(
   return updated;
 }
 
+/**
+ * Has this email already COMPLETED this assessment?
+ *
+ * Only a submitted session counts — an invite that was never opened, or one
+ * still in progress, is not a reason to warn. Matching is case-insensitive
+ * because a manager retyping an address will not reproduce its casing.
+ *
+ * Returns null when there is nothing to warn about, including when no email
+ * was given: without one there is no reliable identity to match on, since
+ * candidates have no accounts.
+ */
+async function findCompletedByEmail(
+  assessmentId: string,
+  email: string | undefined,
+): Promise<DuplicateCandidate | null> {
+  const normalised = email?.trim().toLowerCase();
+  if (!normalised) return null;
+
+  const prior = await prisma.assessmentLink.findFirst({
+    where: {
+      assessment_id: assessmentId,
+      candidate_email: { equals: normalised, mode: 'insensitive' },
+      session: { status: 'submitted' },
+    },
+    orderBy: { created_at: 'desc' },
+    include: { session: { include: { report: { select: { overall_pct: true } } } } },
+  });
+  if (!prior?.session) return null;
+
+  return {
+    candidate_email: prior.candidate_email ?? normalised,
+    candidate_label: prior.candidate_label,
+    completed_at: (prior.session.submitted_at ?? prior.session.started_at ?? prior.created_at).toISOString(),
+    overall_score: prior.session.report?.overall_pct ?? null,
+  };
+}
+
 export async function createLink(
   ownerId: string,
   assessmentId: string,
@@ -258,9 +300,23 @@ export async function createLink(
   // Verify the interviewer owns this assessment before minting a link.
   const assessment = await prisma.assessment.findFirst({
     where: { id: assessmentId, owner_id: ownerId },
-    select: { id: true },
+    select: { id: true, title: true, owner: { select: { name: true, email: true } } },
   });
   if (!assessment) throw new AppError(404, 'ASSESSMENT_NOT_FOUND', 'Assessment not found');
+
+  // Warn before creating, not after — but only once. `confirm_duplicate` is the
+  // manager saying "yes, send it again anyway".
+  if (!input.confirm_duplicate) {
+    const duplicate = await findCompletedByEmail(assessmentId, input.candidate_email);
+    if (duplicate) {
+      throw new AppError(
+        409,
+        'DUPLICATE_CANDIDATE',
+        'This candidate has already completed this assessment.',
+        { duplicate },
+      );
+    }
+  }
 
   const hours = input.expires_in_hours ?? DEFAULT_EXPIRES_HOURS;
   const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
@@ -280,15 +336,32 @@ export async function createLink(
       candidate_label: input.candidate_label?.trim()
         ? input.candidate_label.trim()
         : await nextDefaultLabel(assessmentId),
+      candidate_email: input.candidate_email?.trim().toLowerCase() || null,
       expires_at: expiresAt,
     },
   });
 
   const baseUrl = process.env.CLIENT_URL ?? 'http://localhost:5173';
+
+  // Email is best-effort: the link exists either way, and the status is
+  // returned so the manager sees whether it actually went out.
+  let email: { status: InviteEmailStatus; error?: string } = { status: 'skipped_no_email' };
+  if (link.candidate_email) {
+    email = await sendCandidateInvite(link.candidate_email, {
+      assessmentTitle: assessment.title,
+      fromName: assessment.owner.name || assessment.owner.email,
+      url: `${baseUrl}/a/${link.token}`,
+      expiresAt: link.expires_at.toISOString(),
+    });
+  }
+
   return {
     id: link.id,
     token: link.token,
     candidate_label: link.candidate_label,
+    candidate_email: link.candidate_email,
+    email_status: email.status,
+    ...(email.error ? { email_error: email.error } : {}),
     url: `${baseUrl}/a/${link.token}`,
     expires_at: link.expires_at.toISOString(),
   };

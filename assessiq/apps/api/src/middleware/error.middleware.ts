@@ -7,6 +7,9 @@ export class AppError extends Error {
     public statusCode: number,
     public code: string,
     message: string,
+    /** Optional structured payload merged into the response body — e.g. the
+     *  prior completion behind a DUPLICATE_CANDIDATE 409. */
+    public details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'AppError';
@@ -34,7 +37,7 @@ export function errorHandler(
   _next: NextFunction,
 ) {
   if (err instanceof AppError) {
-    res.status(err.statusCode).json({ error: err.message, code: err.code });
+    res.status(err.statusCode).json({ error: err.message, code: err.code, ...(err.details ?? {}) });
     return;
   }
   console.error('[unhandled error]', err);

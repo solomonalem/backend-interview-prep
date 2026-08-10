@@ -64,8 +64,11 @@ assessmentsRouter.get(
 );
 
 const createLinkSchema = z.object({
+  // Both stay optional — the quick "just send me a link" path must survive.
   candidate_label: z.string().min(1).optional(),
+  candidate_email: z.string().email().optional(),
   expires_in_hours: z.number().int().positive().optional(),
+  confirm_duplicate: z.boolean().optional(),
 });
 
 // POST /assessments/:id/links — generate a shareable candidate link
