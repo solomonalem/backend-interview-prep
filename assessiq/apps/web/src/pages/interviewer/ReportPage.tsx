@@ -12,8 +12,9 @@ import {
   MessageSquare,
   Gauge,
   FileText,
+  UserCheck,
 } from 'lucide-react';
-import type { ReportView } from '@assessiq/types';
+import type { ReportScore, ReportView, SetScoreOverrideRequest } from '@assessiq/types';
 import {
   Badge,
   Button,
@@ -29,6 +30,11 @@ import {
   verdictTone,
   verdictLabel,
 } from '../../components/ui';
+import {
+  OverrideBadge,
+  OverrideBanner,
+  ScoreOverrideEditor,
+} from '../../components/ScoreOverride';
 import { reportsApi } from '../../api/reports.api';
 import { ApiRequestError } from '../../api/client';
 import { cn } from '../../lib/cn';
@@ -38,6 +44,12 @@ const confidenceMeta: Record<string, { tone: 'emerald' | 'rose' | 'sky'; label: 
   overconfident: { tone: 'rose', label: 'Overconfident' },
   underconfident: { tone: 'sky', label: 'Underconfident' },
 };
+
+// The number a reader should act on. An override with no figure ('disagree')
+// leaves the AI's total standing — that is the point of that flag.
+function effectiveTotal(s: ReportScore): number {
+  return s.override?.total_pct ?? s.total_pct;
+}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
@@ -49,7 +61,20 @@ function fmtDate(iso: string | null): string {
   });
 }
 
-function ComponentBar({ label, value, emphasis }: { label: string; value: number; emphasis?: boolean }) {
+// `aiValue` is the AI's own figure when `value` has been overridden. Both are
+// always shown — the bar reflects the operative number, the caption keeps the
+// machine's.
+function ComponentBar({
+  label,
+  value,
+  emphasis,
+  aiValue,
+}: {
+  label: string;
+  value: number;
+  emphasis?: boolean;
+  aiValue?: number;
+}) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -57,7 +82,12 @@ function ComponentBar({ label, value, emphasis }: { label: string; value: number
           {label}
           {emphasis && <span className="ml-1.5 text-[10px] font-semibold text-brand-500">35%</span>}
         </span>
-        <span className="text-xs font-bold text-slate-700 tabular">{value}%</span>
+        <span className="text-xs font-bold text-slate-700 tabular">
+          {value}%
+          {aiValue !== undefined && aiValue !== value && (
+            <span className="ml-1.5 font-medium text-slate-400">AI {aiValue}%</span>
+          )}
+        </span>
       </div>
       <ProgressBar value={value} tone={emphasis ? 'bg-brand-500' : undefined} />
     </div>
@@ -116,6 +146,19 @@ export default function ReportPage() {
     };
   }, [id]);
 
+  // Both write paths return the whole report, because an override also moves
+  // the session total and verdict. Re-deriving those on the client would let
+  // the page drift from the server's arithmetic.
+  const saveOverride = async (questionId: string, body: SetScoreOverrideRequest) => {
+    if (!id) return;
+    setReport(await reportsApi.setOverride(id, questionId, body));
+  };
+
+  const removeOverride = async (questionId: string) => {
+    if (!id) return;
+    setReport(await reportsApi.clearOverride(id, questionId));
+  };
+
   if (loading && !pending) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -159,6 +202,9 @@ export default function ReportPage() {
 
   if (!report) return null;
   const { session, assessment, overall, proctoring, questions } = report;
+  // Overrides move the headline figures; the AI's own stay on screen beside
+  // them. `ov` is null until someone disagrees with something.
+  const ov = overall.override;
   // answer === null means the candidate never submitted that question.
   const unansweredCount = questions.filter((q) => q.answer === null).length;
   const timeUsedMin = Math.round(session.time_used_ms / 60_000);
@@ -185,16 +231,29 @@ export default function ReportPage() {
       <Card className="mb-6">
         <CardBody className="grid gap-8 md:grid-cols-[auto_1fr_1.2fr] md:items-center">
           <div className="flex flex-col items-center gap-3">
-            <ScoreRing value={overall.total_pct} size={120} />
+            <ScoreRing value={ov?.total_pct ?? overall.total_pct} size={120} />
             <span className="text-xs font-medium text-slate-400">Overall</span>
+            {ov && (
+              <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 tabular">
+                AI scored {overall.total_pct}%
+              </span>
+            )}
           </div>
 
           <div className="space-y-4">
             <div>
               <p className="text-xs font-medium text-slate-400 mb-1.5">Verdict</p>
-              <Badge tone={verdictTone[overall.verdict] ?? 'slate'} className="text-sm px-3 py-1">
-                {verdictLabel(overall.verdict)}
+              <Badge
+                tone={verdictTone[ov?.verdict ?? overall.verdict] ?? 'slate'}
+                className="text-sm px-3 py-1"
+              >
+                {verdictLabel(ov?.verdict ?? overall.verdict)}
               </Badge>
+              {ov && ov.verdict !== overall.verdict && (
+                <p className="mt-1.5 text-xs text-slate-400">
+                  AI verdict: {verdictLabel(overall.verdict)}
+                </p>
+              )}
             </div>
             <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
               <div>
@@ -218,13 +277,51 @@ export default function ReportPage() {
 
           <div className="rounded-xl bg-slate-50/70 p-5 space-y-3.5">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Score components</p>
-            <ComponentBar label="Senior signal" value={overall.senior_signal_avg} emphasis />
-            <ComponentBar label="Core" value={overall.core_avg} />
-            <ComponentBar label="Trap" value={overall.trap_avg} />
-            <ComponentBar label="Evidence" value={overall.evidence_avg} />
+            <ComponentBar
+              label="Senior signal"
+              value={ov?.senior_signal_avg ?? overall.senior_signal_avg}
+              aiValue={overall.senior_signal_avg}
+              emphasis
+            />
+            <ComponentBar
+              label="Core"
+              value={ov?.core_avg ?? overall.core_avg}
+              aiValue={overall.core_avg}
+            />
+            <ComponentBar
+              label="Trap"
+              value={ov?.trap_avg ?? overall.trap_avg}
+              aiValue={overall.trap_avg}
+            />
+            <ComponentBar
+              label="Evidence"
+              value={ov?.evidence_avg ?? overall.evidence_avg}
+              aiValue={overall.evidence_avg}
+            />
           </div>
         </CardBody>
       </Card>
+
+      {/* What the headline figures above are actually showing, stated plainly.
+          A reader who doesn't know a human intervened would otherwise read the
+          overridden numbers as the AI's. */}
+      {ov && (
+        <div className="mb-6 flex items-start gap-2.5 rounded-lg border border-violet-200 bg-violet-50/60 px-4 py-3 text-sm text-slate-700">
+          <UserCheck size={16} className="mt-0.5 shrink-0 text-violet-600" />
+          <span>
+            <span className="font-medium">
+              Showing your overrides: {ov.adjusted_count > 0 && `${ov.adjusted_count} score`}
+              {ov.adjusted_count > 0 && ov.adjusted_count !== 1 && 's'}
+              {ov.adjusted_count > 0 && ' corrected'}
+              {ov.adjusted_count > 0 && ov.disagreed_count > 0 && ', '}
+              {ov.disagreed_count > 0 && `${ov.disagreed_count} flagged as disagreed`}.
+            </span>{' '}
+            The AI scored this session {overall.total_pct}% ·{' '}
+            {verdictLabel(overall.verdict)}, and every original score and reasoning is kept
+            below.
+          </span>
+        </div>
+      )}
 
       {/* PROCTORING */}
       <Card className="mb-6">
@@ -296,10 +393,24 @@ export default function ReportPage() {
                       <Badge tone="amber">Not answered</Badge>
                     ) : s ? (
                       <>
-                        <p className={cn('text-2xl font-bold tabular leading-none', s.total_pct >= 70 ? 'text-emerald-600' : s.total_pct >= 45 ? 'text-amber-600' : 'text-rose-600')}>
-                          {s.total_pct}%
+                        {/* The operative number leads; the AI's sits under it
+                            whenever a human changed it. Never one without the
+                            other. */}
+                        <p className={cn('text-2xl font-bold tabular leading-none', effectiveTotal(s) >= 70 ? 'text-emerald-600' : effectiveTotal(s) >= 45 ? 'text-amber-600' : 'text-rose-600')}>
+                          {effectiveTotal(s)}%
                         </p>
-                        <p className="mt-1 text-xs text-slate-400">score</p>
+                        {s.override?.total_pct != null ? (
+                          <p className="mt-1 text-xs text-slate-400 tabular">
+                            AI: {s.total_pct}%
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-xs text-slate-400">score</p>
+                        )}
+                        {s.override && (
+                          <div className="mt-1.5">
+                            <OverrideBadge flag={s.override.flag} />
+                          </div>
+                        )}
                       </>
                     ) : (
                       <Badge tone="rose">Not scored</Badge>
@@ -326,11 +437,30 @@ export default function ReportPage() {
 
                 {s && (
                   <>
+                    <OverrideBanner score={s} />
+
                     <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-5 gap-y-3">
-                      <ComponentBar label="Senior signal" value={s.senior_signal_pct} emphasis />
-                      <ComponentBar label="Core" value={s.core_pct} />
-                      <ComponentBar label="Trap" value={s.trap_pct} />
-                      <ComponentBar label="Evidence" value={s.evidence_pct} />
+                      <ComponentBar
+                        label="Senior signal"
+                        value={s.override?.senior_signal_pct ?? s.senior_signal_pct}
+                        aiValue={s.senior_signal_pct}
+                        emphasis
+                      />
+                      <ComponentBar
+                        label="Core"
+                        value={s.override?.core_pct ?? s.core_pct}
+                        aiValue={s.core_pct}
+                      />
+                      <ComponentBar
+                        label="Trap"
+                        value={s.override?.trap_pct ?? s.trap_pct}
+                        aiValue={s.trap_pct}
+                      />
+                      <ComponentBar
+                        label="Evidence"
+                        value={s.override?.evidence_pct ?? s.evidence_pct}
+                        aiValue={s.evidence_pct}
+                      />
                     </div>
 
                     <div className="grid md:grid-cols-2 gap-4">
@@ -371,6 +501,12 @@ export default function ReportPage() {
                         <p className="text-sm text-slate-700 leading-relaxed">{s.recommended_probe}</p>
                       </div>
                     </div>
+
+                    <ScoreOverrideEditor
+                      score={s}
+                      onSave={(body) => saveOverride(q.question.id, body)}
+                      onClear={() => removeOverride(q.question.id)}
+                    />
                   </>
                 )}
 
