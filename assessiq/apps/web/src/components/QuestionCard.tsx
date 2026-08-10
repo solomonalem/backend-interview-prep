@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Check, Plus, Sparkles } from 'lucide-react';
 import type { QuestionListItem, QuestionMatchKey } from '@assessiq/types';
 import { Badge, Card, difficultyTone } from './ui';
@@ -30,11 +31,14 @@ export function QuestionCard({
   selected,
   onToggle,
   matchedOn,
+  footnote,
 }: {
   question: QuestionListItem;
   selected: boolean;
   onToggle: (id: string) => void;
   matchedOn?: QuestionMatchKey[];
+  /** Extra provenance line under the badges — e.g. where a reused question came from. */
+  footnote?: ReactNode;
 }) {
   return (
     <Card
@@ -69,6 +73,7 @@ export function QuestionCard({
             {question.domain && <Badge tone="violet">{question.domain}</Badge>}
           </div>
           {matchedOn && <MatchHint matchedOn={matchedOn} />}
+          {footnote}
         </div>
       </button>
     </Card>

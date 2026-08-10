@@ -20,6 +20,7 @@ model User {
   updated_at    DateTime      @updatedAt
 
   assessments   Assessment[]
+  score_overrides Score[]     // scores this interviewer has overridden or flagged
 
   @@map("users")
 }
@@ -258,7 +259,34 @@ model Score {
   model_used  String    // e.g. "claude-sonnet-4-6"
   scored_at   DateTime  @default(now())
 
+  // ── Human override ─────────────────────────────────────────────────────────
+  // The interviewer has the final say, but the AI's own numbers are evidence of
+  // how the rubric was applied — so an override is stored ALONGSIDE, never over
+  // the top. Every column above this line is written once, by the scorer, and
+  // is never modified by an override.
+  //
+  // All nullable: a score with no override is the normal case. `adjusted`
+  // carries at least one number; `disagree` may carry none, which is how an
+  // interviewer registers "this is wrong" without inventing a figure.
+  override_flag           OverrideFlag?
+  override_note           String?       // required whenever a flag is set
+  overridden_total_pct    Int?
+  // Per-component overrides. Any left null falls back to the AI's value, so a
+  // manager can correct senior signal alone without restating the other three.
+  overridden_core_pct           Int?
+  overridden_senior_signal_pct  Int?
+  overridden_trap_pct           Int?
+  overridden_evidence_pct       Int?
+  overridden_by           String?
+  overridden_by_user      User?         @relation(fields: [overridden_by], references: [id])
+  overridden_at           DateTime?
+
   @@map("scores")
+}
+
+enum OverrideFlag {
+  adjusted // the interviewer supplied corrected numbers
+  disagree // the interviewer disagrees; numbers optional
 }
 
 enum ConfidenceFlag {

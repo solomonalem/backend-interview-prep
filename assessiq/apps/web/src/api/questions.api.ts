@@ -10,6 +10,7 @@ import type {
   QuestionMatchResponse,
   QuestionPoolRequest,
   QuestionPoolResponse,
+  PreviouslyUsedResponse,
   RefineQuestionRequest,
 } from '@assessiq/types';
 import { api } from './client';
@@ -36,6 +37,12 @@ export const questionsApi = {
     if (f.limit) p.set('limit', String(f.limit));
     return api.get<QuestionMatchResponse>(`/questions/match?${p.toString()}`);
   },
+
+  // Vetted questions this manager has already used, most-recently-used first.
+  previouslyUsed: (limit?: number) =>
+    api.get<PreviouslyUsedResponse>(
+      `/questions/previously-used${limit ? `?limit=${limit}` : ''}`,
+    ),
 
   // ── Stage B ────────────────────────────────────────────────────────────────
   // Bank matches topped up with generated drafts. Slow on a cold bank — every

@@ -1,12 +1,90 @@
-import type { Difficulty, ReportResponse, ReportScore } from '@assessiq/types';
+import type {
+  Difficulty,
+  ReportOverallOverride,
+  ReportResponse,
+  ReportScore,
+  ReportView,
+  ScoreOverride,
+  SetScoreOverrideRequest,
+} from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
-import { verdictFor } from '../utils/score-calc.js';
+import { verdictFor, weightedTotal } from '../utils/score-calc.js';
 import { sendReportReady } from './email.service.js';
 
 function avg(nums: number[]): number {
   if (nums.length === 0) return 0;
   return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+}
+
+// The shape getReport reads an override off. Only the columns it needs.
+type OverridableScore = {
+  core_pct: number;
+  senior_signal_pct: number;
+  trap_pct: number;
+  evidence_pct: number;
+  total_pct: number;
+  override_flag: 'adjusted' | 'disagree' | null;
+  override_note: string | null;
+  overridden_total_pct: number | null;
+  overridden_core_pct: number | null;
+  overridden_senior_signal_pct: number | null;
+  overridden_trap_pct: number | null;
+  overridden_evidence_pct: number | null;
+  overridden_at: Date | null;
+  overridden_by_user: { name: string | null; email: string } | null;
+};
+
+// An override is present only when a flag was set. Note and timestamp are
+// written together with it, so they are non-null in practice; the fallbacks
+// keep a hand-edited row from throwing.
+function overrideOf(s: OverridableScore): ScoreOverride | null {
+  if (!s.override_flag) return null;
+  return {
+    flag: s.override_flag,
+    note: s.override_note ?? '',
+    total_pct: s.overridden_total_pct,
+    core_pct: s.overridden_core_pct,
+    senior_signal_pct: s.overridden_senior_signal_pct,
+    trap_pct: s.overridden_trap_pct,
+    evidence_pct: s.overridden_evidence_pct,
+    by: s.overridden_by_user?.name ?? s.overridden_by_user?.email ?? null,
+    at: (s.overridden_at ?? new Date(0)).toISOString(),
+  };
+}
+
+// What a number resolves to once the override is taken into account. A null
+// override component means "the interviewer did not touch this one", so the
+// AI's value stands.
+const effective = (overridden: number | null, ai: number): number => overridden ?? ai;
+
+// Session figures recomputed with every override applied. Returns null when
+// nothing is overridden, which is what tells the UI to show the AI block alone.
+function overallOverride(scores: OverridableScore[]): ReportOverallOverride | null {
+  const overridden = scores.filter((s) => s.override_flag);
+  if (overridden.length === 0) return null;
+
+  const core = avg(scores.map((s) => effective(s.overridden_core_pct, s.core_pct)));
+  const senior = avg(
+    scores.map((s) => effective(s.overridden_senior_signal_pct, s.senior_signal_pct)),
+  );
+  const trap = avg(scores.map((s) => effective(s.overridden_trap_pct, s.trap_pct)));
+  const evidence = avg(scores.map((s) => effective(s.overridden_evidence_pct, s.evidence_pct)));
+  const total = avg(scores.map((s) => effective(s.overridden_total_pct, s.total_pct)));
+
+  return {
+    total_pct: total,
+    // Same rule as the AI verdict (docs/04) — senior signal leads. Overriding
+    // senior signal is therefore the thing that can actually move a verdict,
+    // which is why per-component override exists at all.
+    verdict: verdictFor(senior, total),
+    core_avg: core,
+    senior_signal_avg: senior,
+    trap_avg: trap,
+    evidence_avg: evidence,
+    adjusted_count: overridden.filter((s) => s.override_flag === 'adjusted').length,
+    disagreed_count: overridden.filter((s) => s.override_flag === 'disagree').length,
+  };
 }
 
 function proctoringNote(counts: {
@@ -110,7 +188,12 @@ export async function getReport(
         orderBy: { position: 'asc' },
         include: {
           question: { select: { id: true, text: true, topic: true, difficulty: true } },
-          score: true,
+          score: {
+            include: {
+              // Attribution for an override — the report names who disagreed.
+              overridden_by_user: { select: { name: true, email: true } },
+            },
+          },
         },
       },
       behavior_events: true,
@@ -163,6 +246,8 @@ export async function getReport(
         senior_signal_avg: avg(scores.map((s) => s.senior_signal_pct)),
         trap_avg: avg(scores.map((s) => s.trap_pct)),
         evidence_avg: avg(scores.map((s) => s.evidence_pct)),
+        // Sits beside the AI figures above, which stay exactly as scored.
+        override: overallOverride(scores),
       },
       proctoring: {
         tab_switch_count: session.report.tab_switch_count,
@@ -210,6 +295,7 @@ export async function getReport(
               what_was_hit: a.score.what_was_hit,
               what_was_missed: a.score.what_was_missed,
               recommended_probe: a.score.recommended_probe,
+              override: overrideOf(a.score),
             }
           : null;
         return {
@@ -237,4 +323,123 @@ export async function getReport(
       pdf_url: session.report.pdf_url,
     },
   };
+}
+
+// ── Score override ───────────────────────────────────────────────────────────
+// The interviewer has the final say over a score, but the AI's own numbers are
+// the evidence of how the rubric was applied — so nothing here writes to the
+// scorer's columns. Every mutation below touches `override*`/`overridden*` only.
+
+// Locate the score for one question of one session, refusing anything this
+// interviewer doesn't own. 404 rather than 403 throughout, so the endpoint
+// never confirms that someone else's session exists.
+async function findOwnedScore(ownerId: string, sessionId: string, questionId: string) {
+  const answer = await prisma.answer.findFirst({
+    where: { session_id: sessionId, question_id: questionId },
+    select: {
+      score: { select: { id: true } },
+      session: { select: { assessment: { select: { owner_id: true } } } },
+    },
+  });
+  if (!answer || answer.session.assessment.owner_id !== ownerId) {
+    throw new AppError(404, 'ANSWER_NOT_FOUND', 'No answer for that question in this session');
+  }
+  if (!answer.score) {
+    // An unanswered or still-scoring question has nothing to disagree with yet.
+    throw new AppError(409, 'NOT_SCORED', 'This answer has not been scored yet');
+  }
+  return answer.score.id;
+}
+
+export async function setScoreOverride(
+  ownerId: string,
+  sessionId: string,
+  questionId: string,
+  input: SetScoreOverrideRequest,
+): Promise<ReportView> {
+  const scoreId = await findOwnedScore(ownerId, sessionId, questionId);
+  const ai = await prisma.score.findUniqueOrThrow({
+    where: { id: scoreId },
+    select: { core_pct: true, senior_signal_pct: true, trap_pct: true, evidence_pct: true },
+  });
+
+  const components = {
+    core: input.core_pct ?? null,
+    senior: input.senior_signal_pct ?? null,
+    trap: input.trap_pct ?? null,
+    evidence: input.evidence_pct ?? null,
+  };
+  const touchedComponent = Object.values(components).some((v) => v !== null);
+  const hasNumbers = input.total_pct !== undefined || touchedComponent;
+
+  // 'adjusted' claims a correction, so it must carry one. 'disagree' need not —
+  // registering "this is wrong" without inventing a figure is the whole point.
+  if (input.flag === 'adjusted' && !hasNumbers) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      'An adjusted score needs a corrected total or at least one component',
+    );
+  }
+
+  // An explicit total wins verbatim: a manager may judge an answer a 65 overall
+  // regardless of what the weighting produces. Otherwise, when a component was
+  // corrected, the total is recomputed under the same weighting the scorer uses
+  // (docs/04) — leaving the AI total standing beside a changed component would
+  // be internally inconsistent.
+  const overriddenTotal =
+    input.total_pct !== undefined
+      ? input.total_pct
+      : touchedComponent
+        ? weightedTotal(
+            effective(components.core, ai.core_pct),
+            effective(components.senior, ai.senior_signal_pct),
+            effective(components.trap, ai.trap_pct),
+            effective(components.evidence, ai.evidence_pct),
+          )
+        : null;
+
+  await prisma.score.update({
+    where: { id: scoreId },
+    data: {
+      override_flag: input.flag,
+      override_note: input.note.trim(),
+      overridden_total_pct: overriddenTotal,
+      overridden_core_pct: components.core,
+      overridden_senior_signal_pct: components.senior,
+      overridden_trap_pct: components.trap,
+      overridden_evidence_pct: components.evidence,
+      overridden_by: ownerId,
+      overridden_at: new Date(),
+    },
+  });
+
+  // Return the whole report: an override moves the session totals and verdict
+  // too, and a client that re-derived those itself would drift from the server.
+  return (await getReport(ownerId, sessionId)).body as ReportView;
+}
+
+// Undo. Clears the override columns and leaves the AI score exactly as it was —
+// which it always was, since nothing here ever wrote to it.
+export async function clearScoreOverride(
+  ownerId: string,
+  sessionId: string,
+  questionId: string,
+): Promise<ReportView> {
+  const scoreId = await findOwnedScore(ownerId, sessionId, questionId);
+  await prisma.score.update({
+    where: { id: scoreId },
+    data: {
+      override_flag: null,
+      override_note: null,
+      overridden_total_pct: null,
+      overridden_core_pct: null,
+      overridden_senior_signal_pct: null,
+      overridden_trap_pct: null,
+      overridden_evidence_pct: null,
+      overridden_by: null,
+      overridden_at: null,
+    },
+  });
+  return (await getReport(ownerId, sessionId)).body as ReportView;
 }

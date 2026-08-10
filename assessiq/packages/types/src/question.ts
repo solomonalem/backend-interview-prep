@@ -70,6 +70,24 @@ export interface QuestionMatchResponse {
   pages: number;
 }
 
+// ── GET /questions/previously-used ───────────────────────────────────────────
+// Questions this manager has already put in an assessment. Not a new store —
+// a filtered view of the bank, joined through AssessmentQuestion. Only vetted,
+// actually-used questions appear, so these go straight into the tray.
+export interface PreviouslyUsedQuestion extends QuestionListItem {
+  /** How many of this manager's assessments include it. */
+  used_count: number;
+  /** ISO timestamp of the most recent assessment that used it — the sort key. */
+  last_used_at: string;
+  /** Title of that most recent assessment, so the row says where it came from. */
+  last_used_in: string;
+}
+
+export interface PreviouslyUsedResponse {
+  questions: PreviouslyUsedQuestion[];
+  total: number;
+}
+
 // ── Generation (Stage B) ─────────────────────────────────────────────────────
 // A draft carries the full rubric, private `_guide` fields included. This shape
 // is ONLY ever sent to an authenticated interviewer reviewing the draft — it is

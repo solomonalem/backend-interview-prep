@@ -103,6 +103,11 @@ can study the same bank.
   Managers can also write their own question and have the AI draft its rubric.
 - **Selection tray** — the single source of truth for an assessment. Nothing is
   ever auto-selected.
+- **Previously used** — a third question source beside search and write-your-own,
+  listing vetted questions this manager has already put in an assessment
+  (`GET /questions/previously-used`). A filtered view of the bank joined through
+  `AssessmentQuestion`, not a new store; drafts and rejected questions never
+  appear. Selecting one goes straight to the tray — already vetted, already used.
 - **Candidate links** — signed token URLs, no candidate account. Auto-named
   `Candidate N`, renameable afterwards.
 - **Proctored timed sessions** — one question at a time, passive tab/focus/paste/
@@ -111,6 +116,13 @@ can study the same bank.
   Claude at `temperature: 0` against the rubric; reports show overall/component
   averages, verdict, proctoring context, and per-question breakdown including
   questions the candidate never answered. Emailed to the interviewer via Resend.
+- **Score override** — the interviewer has the final say: any scored answer can
+  be corrected (`adjusted`, with a total and/or individual components) or
+  rejected outright (`disagree`, note only), always with a required note.
+  **The AI's own columns are never written to.** Overrides live in nullable
+  `override_*`/`overridden_*` columns on `Score` and are returned alongside, with
+  session totals and verdict re-derived into a separate `overall.override` block.
+  `PUT`/`DELETE /reports/session/:id/questions/:qid/override`.
 
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
@@ -131,8 +143,9 @@ no stub and fails loudly, because a fabricated rubric is indistinguishable from
 a real one.
 
 **Not in v1.0.0:** PDF export (Puppeteer → R2; the `pdf_url`/`pdf_status` columns
-exist), team accounts, analytics, a "reuse questions I've sent before" view,
-automated tests, and production deploy/auth hardening.
+exist), team accounts, analytics, automated tests, and production deploy/auth
+hardening. (The "reuse questions I've sent before" view and score override
+landed after the tag — see the two bullets above.)
 
 ---
 
@@ -222,15 +235,19 @@ value order.
 
 1. **Automated tests.** There are still none — Phase 0 was manual by design
    (`docs/10-mvp-scope.md`). The highest-value first targets are the scoring
-   maths (`score-calc`), the pool thresholds in `generation.service`, and the
-   `_guide`-never-leaks guarantee.
+   maths (`score-calc`, now including the override recompute), the pool
+   thresholds in `generation.service`, the `_guide`-never-leaks guarantee, and
+   the "an override never writes an AI score column" invariant.
 2. **PDF export** (Puppeteer → R2). Columns exist; Chromium download is skipped
    locally via `.npmrc` (`npx puppeteer browsers install chrome` to enable).
+   Note it must render the override alongside the AI score, not instead of it.
 3. **Deploy + auth hardening** — Railway per `docs/06`, real Google OAuth
    credentials, rate limiting.
-4. **Reuse view** — "questions I've sent before", the deferred Stage C.
-5. **Generation dedup.** Batched generation calls don't see each other's output,
+4. **Generation dedup.** Batched generation calls don't see each other's output,
    so one request can produce near-duplicate drafts (measured ~1 in 15).
+5. **Override reach.** Overrides are per-question only. A session-level "I
+   disagree with this verdict" and a filter for overridden reports are the
+   obvious follow-ups; neither is needed for the human to have the final say.
 
 ---
 

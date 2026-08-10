@@ -6,7 +6,32 @@ export interface ReportPending {
   total_answers: number;
 }
 
+// `adjusted` — the interviewer supplied corrected numbers.
+// `disagree`  — the interviewer rejects the score without necessarily giving one.
+export type OverrideFlag = 'adjusted' | 'disagree';
+
+/**
+ * A human override of an AI score. It is stored and returned ALONGSIDE the AI's
+ * own numbers, never in place of them: every `*_pct` on ReportScore is still
+ * exactly what the scorer produced. Any field here left null falls back to the
+ * AI value for that component.
+ */
+export interface ScoreOverride {
+  flag: OverrideFlag;
+  note: string;
+  /** null when the interviewer flagged a disagreement without giving a number. */
+  total_pct: number | null;
+  core_pct: number | null;
+  senior_signal_pct: number | null;
+  trap_pct: number | null;
+  evidence_pct: number | null;
+  /** Display name of the interviewer who overrode it — attribution, not an id. */
+  by: string | null;
+  at: string;
+}
+
 export interface ReportScore {
+  // ── The AI's original score. Never modified by an override. ────────────────
   total_pct: number;
   core_pct: number;
   core_reasoning: string;
@@ -19,6 +44,21 @@ export interface ReportScore {
   what_was_hit: string[];
   what_was_missed: string[];
   recommended_probe: string;
+  /** The interviewer's override, if any. null is the normal case. */
+  override: ScoreOverride | null;
+}
+
+/** Request body for PUT …/questions/:questionId/override. */
+export interface SetScoreOverrideRequest {
+  flag: OverrideFlag;
+  /** Why. Required — an unexplained override is worse than none. */
+  note: string;
+  /** Omit to leave the AI value standing for that number. */
+  total_pct?: number;
+  core_pct?: number;
+  senior_signal_pct?: number;
+  trap_pct?: number;
+  evidence_pct?: number;
 }
 
 export interface ReportQuestion {
@@ -28,6 +68,20 @@ export interface ReportQuestion {
   score: ReportScore | null;
   confidence_rating: number | null;
   confidence_flag: string | null;
+}
+
+/** Session-level figures with overrides applied. Sits beside the AI originals. */
+export interface ReportOverallOverride {
+  total_pct: number;
+  verdict: string;
+  core_avg: number;
+  senior_signal_avg: number;
+  trap_avg: number;
+  evidence_avg: number;
+  /** Scores carrying corrected numbers. */
+  adjusted_count: number;
+  /** Scores flagged as disagreed-with, whether or not numbers were given. */
+  disagreed_count: number;
 }
 
 export interface ReportProctoringMark {
@@ -49,12 +103,19 @@ export interface ReportView {
   };
   assessment: { title: string; timer_seconds: number | null };
   overall: {
+    // The AI's own totals, as compiled when scoring finished. These never move.
     total_pct: number;
     verdict: string;
     core_avg: number;
     senior_signal_avg: number;
     trap_avg: number;
     evidence_avg: number;
+    /**
+     * The same figures recomputed with every override applied — null when
+     * nothing has been overridden. Kept as a separate block so the AI's
+     * originals above keep meaning exactly what they always meant.
+     */
+    override: ReportOverallOverride | null;
   };
   proctoring: {
     tab_switch_count: number;
