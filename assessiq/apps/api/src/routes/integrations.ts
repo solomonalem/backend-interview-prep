@@ -45,11 +45,28 @@ function backToApp(res: Response, status: string): void {
 }
 
 /**
- * GET /integrations/github/callback
+ * Completes the user-authorisation leg and sends the manager back to a page.
+ * Shared, because GitHub can deliver this to either registered URL: the
+ * Callback URL is where it belongs, but an App whose Callback URL is unset or
+ * pointed at the Setup URL delivers it there instead. Handling it in both
+ * places means a misconfigured registration degrades to "works" rather than
+ * "reports a missing installation", which is what it looked like before.
+ */
+async function finishSync(res: Response, code: string, state: string): Promise<void> {
+  try {
+    const { candidates } = await completeSyncCallback(state, code);
+    backToApp(res, candidates.length ? 'sync_ready' : 'sync_none');
+  } catch {
+    backToApp(res, 'sync_failed');
+  }
+}
+
+/**
+ * GET /integrations/github/callback — the App's **Setup URL**.
  *
- * GitHub sends the manager here after they approve the install, with the
- * installation_id it just minted. Auth is the normal session cookie: this is
- * their own browser mid-flow, so they are already logged in.
+ * GitHub sends the manager here after they install or update, with the
+ * installation_id. Auth is the normal session cookie: this is their own browser
+ * mid-flow, so they are already logged in.
  *
  * Note for deployment: this relies on the cookie being sent to the API origin.
  * It holds wherever the API and app share a site (including local dev). If they
@@ -60,6 +77,15 @@ function backToApp(res: Response, status: string): void {
 integrationsRouter.get(
   '/github/callback',
   asyncHandler(async (req: Request, res: Response) => {
+    const { code, state, installation_id, setup_action } = req.query;
+
+    // A user-authorisation callback that landed on the Setup URL. Recognised by
+    // its own parameters and handled before the cookie check, because `state`
+    // — not the session — is what ties that flow to its owner.
+    if (typeof code === 'string' && code && typeof state === 'string' && state) {
+      return finishSync(res, code, state);
+    }
+
     const token = req.cookies?.[AUTH_COOKIE];
     if (!token) return backToApp(res, 'unauthenticated');
 
@@ -70,15 +96,16 @@ integrationsRouter.get(
       return backToApp(res, 'unauthenticated');
     }
 
-    const installationId = req.query.installation_id;
-    if (typeof installationId !== 'string' || !installationId) {
-      // GitHub also lands here for setup_action=request (the user asked an org
-      // owner to approve). There is no installation yet — say so plainly.
-      return backToApp(res, 'no_installation');
+    if (typeof installation_id !== 'string' || !installation_id) {
+      // Two genuinely different situations, previously collapsed into one
+      // message that told everyone their org owner had to approve:
+      //   setup_action=request → they asked an owner to approve; nothing exists yet.
+      //   anything else        → we simply weren't told which installation.
+      return backToApp(res, setup_action === 'request' ? 'approval_pending' : 'no_installation');
     }
 
     try {
-      await completeInstallation(ownerId, installationId);
+      await completeInstallation(ownerId, installation_id);
       backToApp(res, 'connected');
     } catch {
       // The manager gets a readable page; the detail is already surfaced by the
@@ -111,13 +138,8 @@ integrationsRouter.get(
     if (typeof code !== 'string' || typeof state !== 'string' || !code || !state) {
       return backToApp(res, 'sync_failed');
     }
-    try {
-      const { candidates } = await completeSyncCallback(state, code);
-      // The candidate list is cached server-side; the page fetches it next.
-      backToApp(res, candidates.length ? 'sync_ready' : 'sync_none');
-    } catch {
-      backToApp(res, 'sync_failed');
-    }
+    // The candidate list is cached server-side; the page fetches it next.
+    await finishSync(res, code, state);
   }),
 );
 

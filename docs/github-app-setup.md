@@ -19,10 +19,38 @@ Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
 |---|---|
 | **GitHub App name** | `AssessIQ` (or `AssessIQ Dev` — names are globally unique) |
 | **Homepage URL** | `http://localhost:5173` in dev |
-| **Callback URL** | `http://localhost:3001/api/v1/integrations/github/oauth/callback` — used by Sync only (see below) |
-| **Setup URL** | `http://localhost:3001/api/v1/integrations/github/callback` |
-| **Redirect on update** | ✅ **checked** — so "change repositories" comes back to us too |
 | **Webhook** | **uncheck Active** for now (webhooks land in Slice 4) |
+
+### The three URL settings — get these right or the flows fail silently
+
+These live in **two different sections** of the App page and are easy to miss.
+Both known failure modes came from exactly these fields, so they are worth
+checking twice. The two URLs are **different endpoints** — do not point both at
+the same one.
+
+| Setting | Section on the GitHub App page | Value |
+|---|---|---|
+| **Callback URL** | *Identifying and authorizing users* | `http://localhost:3001/api/v1/integrations/github/oauth/callback` |
+| **Setup URL** | *Post installation* | `http://localhost:3001/api/v1/integrations/github/callback` |
+| **Redirect on update** | *Post installation*, checkbox | ✅ **checked** |
+
+What each one does, and what breaks without it:
+
+- **Setup URL** — where GitHub returns the manager after they install. Blank, and
+  a successful install never reaches AssessIQ: the installation exists on GitHub
+  and nothing exists here, with no error anywhere. This is the redirect bug.
+- **Redirect on update** — unchecked, the *initial* install returns but
+  **changing repositories later does not**. The repo list then silently drifts
+  out of date relative to what the manager actually shared.
+- **Callback URL** — where GitHub returns the manager after they authorise
+  **Sync from GitHub**. Point it at the Setup URL by mistake and the sync
+  redirect arrives at the install handler, which has no `installation_id` to
+  work with. (That handler now detects a `code`+`state` pair and completes the
+  sync anyway, so this misconfiguration degrades to working — but set it
+  correctly regardless.)
+
+Leave **"Request user authorization (OAuth) during installation"** unchecked.
+Install and sync are separate flows here by design.
 
 ### Permissions — this is the part that matters
 
@@ -85,6 +113,18 @@ curl -s -b cookies.txt http://localhost:3001/api/v1/integrations/github
 **Integrations → Connect GitHub** → GitHub shows *its own* permission screen and
 repo picker → approve → you land back on the Integrations page with the repos
 you selected listed.
+
+If you land back with a **warning banner instead of the repo list**, match it here:
+
+| Banner | Cause |
+|---|---|
+| "…without telling us which installation" | **Setup URL** missing or wrong |
+| "…organisation requires an owner to approve" | genuine: an org owner must approve (only shown for `setup_action=request`) |
+| "The sync could not be completed" | **Callback URL** wrong, or the 10-minute state expired |
+| "no GitHub App is configured" | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` not loaded — restart the API |
+
+Changing repositories later and finding the list unchanged means **Redirect on
+update** is unchecked.
 
 ---
 

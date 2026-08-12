@@ -42,9 +42,16 @@ const CALLBACK_MESSAGE: Record<string, { tone: 'ok' | 'warn'; text: string }> = 
     tone: 'warn',
     text: 'The sync could not be completed — nothing was changed. Try starting it again.',
   },
+  // Only for setup_action=request — an owner genuinely has to approve. Telling
+  // every no-installation case this was wrong for personal accounts, which
+  // have no owner to wait on.
+  approval_pending: {
+    tone: 'warn',
+    text: 'Your organisation requires an owner to approve this app. The connection completes once they do — nothing more is needed from you.',
+  },
   no_installation: {
     tone: 'warn',
-    text: 'GitHub sent you back without an installation. If your organisation requires an owner to approve the app, the connection completes once they do.',
+    text: "GitHub sent you back without telling us which installation, so nothing changed. If the app is already installed, use “Sync from GitHub” to link it.",
   },
   unauthenticated: {
     tone: 'warn',
