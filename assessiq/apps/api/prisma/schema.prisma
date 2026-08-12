@@ -21,6 +21,7 @@ model User {
 
   assessments   Assessment[]
   score_overrides Score[]     // scores this interviewer has overridden or flagged
+  repo_integrations RepoIntegration[]
 
   @@map("users")
 }
@@ -411,4 +412,70 @@ enum StoryType {
   feature
   incident
   architecture
+}
+
+// ─── REPO GROUNDING (docs/DESIGN_REPO_GROUNDING.md) ──────────────────────────
+// A manager connects a GitHub repository so questions can be grounded in the
+// system a candidate would actually work on.
+//
+// CARDINAL RULE (design §2.2): source code is NEVER stored. These tables hold
+// the connection and which repos it covers. Derived findings and citations
+// arrive in Slice 2; file contents never do, anywhere.
+
+model RepoIntegration {
+  id              String   @id @default(cuid())
+  owner_id        String
+  owner           User     @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+
+  // 'github' today. The column exists so GitLab/Bitbucket can reuse these
+  // tables later — everything after the clone step is provider-agnostic.
+  provider        String   @default("github")
+
+  // The GitHub App installation. Not a credential: tokens are minted from it
+  // on demand via the app's private key and expire in an hour, so there is
+  // nothing long-lived here to leak.
+  installation_id String
+  account_login   String   // the org/user the app is installed on
+
+  // revoked = the manager disconnected, here or on GitHub. The row and its
+  // repos are kept (derived data survives, per §2.1); only re-scanning stops.
+  status          IntegrationStatus @default(active)
+
+  // Analysis sees only structural summaries, never raw code bodies (§2.5).
+  // Lives here from day one, as the design requires; Slice 2 consumes it.
+  strict_mode     Boolean  @default(false)
+
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  repos           RepoRef[]
+
+  // One integration per provider per owner. Reconnecting after a disconnect
+  // updates this row rather than orphaning the repos hanging off it.
+  @@unique([owner_id, provider])
+  @@map("repo_integrations")
+}
+
+enum IntegrationStatus {
+  active
+  revoked
+}
+
+model RepoRef {
+  id              String          @id @default(cuid())
+  integration_id  String
+  integration     RepoIntegration @relation(fields: [integration_id], references: [id], onDelete: Cascade)
+
+  full_name       String          // "org/repo"
+  default_branch  String
+
+  // Set by Slice 2. A plain nullable column rather than a relation until the
+  // RepoScan model exists, so this migration stands alone.
+  last_scan_id    String?
+
+  created_at      DateTime        @default(now())
+
+  @@unique([integration_id, full_name])
+  @@index([integration_id])
+  @@map("repo_refs")
 }
