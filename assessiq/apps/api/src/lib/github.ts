@@ -16,12 +16,28 @@ const API = 'https://api.github.com';
 export const GITHUB_APP_ID = process.env.GITHUB_APP_ID ?? '';
 export const GITHUB_APP_SLUG = process.env.GITHUB_APP_SLUG ?? '';
 
+// User-to-server credentials, used ONLY to establish which GitHub identity is
+// sitting in front of us so we can tell whose installations are whose. They are
+// never used to read repository content — that always goes through an
+// installation token. See the sync flow in integration.service.
+export const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID ?? '';
+const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET ?? '';
+
 // PEM keys are multi-line. .env carries them with literal \n, so unescape.
 const PRIVATE_KEY = (process.env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n');
 
 /** False until the human registers the App and fills in the env (design §"PREREQUISITE"). */
 export function isGithubConfigured(): boolean {
   return Boolean(GITHUB_APP_ID && PRIVATE_KEY);
+}
+
+/**
+ * Sync needs the App's OAuth credentials on top of the App itself. Kept as a
+ * separate check so the install flow keeps working on a deployment that has
+ * only the base credentials configured.
+ */
+export function isOauthConfigured(): boolean {
+  return Boolean(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET);
 }
 
 // Thrown for anything GitHub-side. Carries a status so the service can map a
@@ -136,6 +152,77 @@ export async function listInstallationRepos(installationId: string): Promise<Git
     if (data.repositories.length < 100) break;
   }
   return repos;
+}
+
+// ── User-to-server: proving whose installation is whose ──────────────────────
+// Recovery path for when the install redirect never happens (the manager
+// installed or edited the app directly on github.com). We cannot simply list
+// the App's installations and offer them: /app/installations returns EVERY
+// customer's installation, so adopting from it would be a cross-tenant hole
+// (design §2.4). Instead the manager authenticates with GitHub, and GitHub
+// tells us which installations THEY can see.
+
+/** Where the manager authorises us to read their GitHub identity. */
+export function userAuthorizeUrl(state: string): string {
+  const p = new URLSearchParams({ client_id: GITHUB_CLIENT_ID, state });
+  return `https://github.com/login/oauth/authorize?${p.toString()}`;
+}
+
+/**
+ * Trade the callback code for a user access token. Short-lived and never
+ * persisted — it is used once, in this request, to enumerate installations.
+ */
+export async function exchangeUserCode(code: string): Promise<string> {
+  const res = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'AssessIQ',
+    },
+    body: JSON.stringify({
+      client_id: GITHUB_CLIENT_ID,
+      client_secret: GITHUB_CLIENT_SECRET,
+      code,
+    }),
+  });
+  if (!res.ok) throw new GithubError('Could not exchange the GitHub code', res.status);
+
+  const body = (await res.json()) as { access_token?: string; error_description?: string };
+  if (!body.access_token) {
+    // Never echo the body — it can carry the client secret back in some error shapes.
+    throw new GithubError(body.error_description ?? 'GitHub declined the authorisation', 401);
+  }
+  return body.access_token;
+}
+
+export interface UserInstallation {
+  id: string;
+  account_login: string;
+  account_type: string;
+  /** 'selected' | 'all' — surfaced so the UI can warn about an all-repos install. */
+  repository_selection: string;
+}
+
+/**
+ * The installations THIS GitHub user can access. Scoped by GitHub itself, which
+ * is the whole point: it is the only authority on whose installation is whose.
+ */
+export async function listUserInstallations(userToken: string): Promise<UserInstallation[]> {
+  const data = await ghFetch<{
+    installations: {
+      id: number;
+      account: { login: string; type: string } | null;
+      repository_selection: string;
+    }[];
+  }>('/user/installations?per_page=100', userToken);
+
+  return data.installations.map((i) => ({
+    id: String(i.id),
+    account_login: i.account?.login ?? 'unknown',
+    account_type: i.account?.type ?? 'unknown',
+    repository_selection: i.repository_selection,
+  }));
 }
 
 /**

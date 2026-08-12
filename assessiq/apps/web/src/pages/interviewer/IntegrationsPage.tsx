@@ -9,8 +9,10 @@ import {
   AlertTriangle,
   CheckCircle2,
   BookLock,
+  RefreshCw,
+  Download,
 } from 'lucide-react';
-import type { IntegrationStatusResponse } from '@assessiq/types';
+import type { IntegrationStatusResponse, SyncCandidate } from '@assessiq/types';
 import {
   Badge,
   Button,
@@ -28,6 +30,18 @@ import { ApiRequestError } from '../../api/client';
 // always lands here with one of these rather than dumping JSON in the browser.
 const CALLBACK_MESSAGE: Record<string, { tone: 'ok' | 'warn'; text: string }> = {
   connected: { tone: 'ok', text: 'GitHub connected. The repositories you picked are listed below.' },
+  sync_ready: {
+    tone: 'ok',
+    text: 'GitHub confirmed your identity. Pick the installation to adopt below.',
+  },
+  sync_none: {
+    tone: 'warn',
+    text: 'GitHub says you have no installations of this app. Install it first, then sync.',
+  },
+  sync_failed: {
+    tone: 'warn',
+    text: 'The sync could not be completed — nothing was changed. Try starting it again.',
+  },
   no_installation: {
     tone: 'warn',
     text: 'GitHub sent you back without an installation. If your organisation requires an owner to approve the app, the connection completes once they do.',
@@ -54,8 +68,9 @@ export default function IntegrationsPage() {
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<IntegrationStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<'connect' | 'disconnect' | null>(null);
+  const [busy, setBusy] = useState<'connect' | 'disconnect' | 'sync' | string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<SyncCandidate[]>([]);
 
   const callback = params.get('github');
   const notice = callback ? CALLBACK_MESSAGE[callback] : undefined;
@@ -74,6 +89,42 @@ export default function IntegrationsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // After the authorisation leg, the verified installations are waiting
+  // server-side. Fetch them so the manager can adopt one.
+  useEffect(() => {
+    if (callback !== 'sync_ready') return;
+    integrationsApi
+      .syncCandidates()
+      .then((r) => setCandidates(r.candidates))
+      .catch(() => setError('Could not load the installations GitHub confirmed.'));
+  }, [callback]);
+
+  const adopt = async (installationId: string) => {
+    setBusy(installationId);
+    setError(null);
+    try {
+      await integrationsApi.syncAdopt(installationId);
+      setCandidates([]);
+      await load();
+    } catch (e) {
+      setError(e instanceof ApiRequestError ? e.message : 'Could not adopt that installation.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const startSync = async () => {
+    setBusy('sync');
+    setError(null);
+    try {
+      const { url } = await integrationsApi.syncStart();
+      window.location.href = url;
+    } catch (e) {
+      setError(e instanceof ApiRequestError ? e.message : 'Could not start the sync.');
+      setBusy(null);
+    }
+  };
 
   // Clear the callback marker once read, so a refresh doesn't re-announce it.
   useEffect(() => {
@@ -227,6 +278,16 @@ export default function IntegrationsPage() {
               )}
               {connected ? 'Reconnect or change repositories' : 'Connect GitHub'}
             </Button>
+            {/* Recovery path. GitHub only redirects back on some install paths
+                — editing an installation from GitHub's own settings page is a
+                common one that doesn't — so the connection can exist there and
+                be absent here. */}
+            {data?.sync_available && (
+              <Button variant="secondary" onClick={startSync} disabled={busy !== null}>
+                {busy === 'sync' ? <Spinner /> : <RefreshCw size={16} />}
+                Sync from GitHub
+              </Button>
+            )}
             {connected && (
               <Button variant="secondary" onClick={disconnect} disabled={busy !== null}>
                 {busy === 'disconnect' ? <Spinner /> : <Link2Off size={16} />}
@@ -237,8 +298,70 @@ export default function IntegrationsPage() {
               GitHub asks you which repositories to share — we only ever see the ones you pick.
             </p>
           </div>
+
+          {data?.configured && !data.sync_available && (
+            <p className="text-xs text-slate-400">
+              Already installed on GitHub but not showing here? Syncing needs{' '}
+              <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px]">GITHUB_CLIENT_ID</code>{' '}
+              and{' '}
+              <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px]">
+                GITHUB_CLIENT_SECRET
+              </code>{' '}
+              — see docs/github-app-setup.md.
+            </p>
+          )}
         </CardBody>
       </Card>
+
+      {/* Only installations GitHub confirmed belong to this manager. The server
+          refuses to adopt anything outside this list. */}
+      {candidates.length > 0 && (
+        <Card className="mb-6 ring-1 ring-brand-200">
+          <CardHeader>
+            <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+              <Download size={16} className="text-brand-500" /> Installations GitHub confirmed are
+              yours
+            </h3>
+            <Badge tone="brand">{candidates.length}</Badge>
+          </CardHeader>
+          <CardBody className="space-y-2">
+            <p className="text-xs text-slate-400">
+              Adopting links the installation to this account. Nothing is read from your code by
+              doing so.
+            </p>
+            {candidates.map((c) => (
+              <div
+                key={c.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-4 py-3"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-800">
+                    {c.account_login}{' '}
+                    <span className="font-normal text-slate-400">({c.account_type})</span>
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    {c.repository_selection === 'all' ? (
+                      <span className="text-amber-600">
+                        all repositories — consider narrowing this on GitHub
+                      </span>
+                    ) : (
+                      'selected repositories'
+                    )}
+                  </p>
+                </div>
+                <Button onClick={() => adopt(c.id)} disabled={busy !== null}>
+                  {busy === c.id ? (
+                    <Spinner className="border-white/40 border-t-white" />
+                  ) : (
+                    <Download size={15} />
+                  )}
+                  Adopt
+                </Button>
+              </div>
+            ))}
+          </CardBody>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

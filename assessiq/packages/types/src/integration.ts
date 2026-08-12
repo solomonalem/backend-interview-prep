@@ -34,10 +34,36 @@ export interface IntegrationView {
  */
 export interface IntegrationStatusResponse {
   configured: boolean;
+  /**
+   * Whether "Sync from GitHub" can run. Needs the App's OAuth credentials on
+   * top of the App itself, so a deployment can have `configured: true` and this
+   * false — the install flow works, recovery doesn't.
+   */
+  sync_available: boolean;
   integration: IntegrationView | null;
 }
 
 /** POST /integrations/github/install-url */
 export interface InstallUrlResponse {
   url: string;
+}
+
+/**
+ * An installation GitHub confirmed this manager can see. Only these can be
+ * adopted — the server refuses anything outside the list it verified.
+ */
+export interface SyncCandidate {
+  id: string;
+  account_login: string;
+  account_type: string;
+  /** 'selected' | 'all'. An all-repos install is worth warning about. */
+  repository_selection: string;
+}
+
+export interface SyncCandidatesResponse {
+  candidates: SyncCandidate[];
+}
+
+export interface AdoptInstallationRequest {
+  installation_id: string;
 }

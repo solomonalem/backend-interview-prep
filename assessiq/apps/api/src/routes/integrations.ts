@@ -1,12 +1,17 @@
 import { Router, type Request, type Response } from 'express';
+import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import { AUTH_COOKIE, verifyInterviewerToken } from '../lib/jwt.js';
 import {
+  adoptInstallation,
   completeInstallation,
+  completeSyncCallback,
   disconnect,
   getIntegration,
   getInstallUrl,
+  getSyncCandidates,
+  startSync,
 } from '../services/integration.service.js';
 
 export const integrationsRouter = Router();
@@ -80,6 +85,63 @@ integrationsRouter.get(
       // integration endpoint they land on.
       backToApp(res, 'error');
     }
+  }),
+);
+
+// ── Sync: recovering an installation that never came back through a redirect ─
+
+// POST /integrations/github/sync/start — begin the authorisation that proves
+// which GitHub identity is asking, so we know whose installations to offer.
+integrationsRouter.post(
+  '/github/sync/start',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    res.json({ url: startSync(req.interviewer!.id) });
+  }),
+);
+
+// GET /integrations/github/oauth/callback — GitHub returns the manager here.
+// Another top-level browser navigation, so every outcome is a redirect to a
+// readable page. Auth comes from the signed `state`, not the session cookie:
+// state is what ties this callback to the manager who started it.
+integrationsRouter.get(
+  '/github/oauth/callback',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { code, state } = req.query;
+    if (typeof code !== 'string' || typeof state !== 'string' || !code || !state) {
+      return backToApp(res, 'sync_failed');
+    }
+    try {
+      const { candidates } = await completeSyncCallback(state, code);
+      // The candidate list is cached server-side; the page fetches it next.
+      backToApp(res, candidates.length ? 'sync_ready' : 'sync_none');
+    } catch {
+      backToApp(res, 'sync_failed');
+    }
+  }),
+);
+
+// GET /integrations/github/sync/candidates — the verified list from the most
+// recent authorisation. Empty once it expires, which the UI treats as "start again".
+integrationsRouter.get(
+  '/github/sync/candidates',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    res.json({ candidates: await getSyncCandidates(req.interviewer!.id) });
+  }),
+);
+
+const adoptSchema = z.object({ installation_id: z.string().min(1) });
+
+// POST /integrations/github/sync/adopt — adopt one of them. The server checks
+// the id against the verified list; anything else is refused.
+integrationsRouter.post(
+  '/github/sync/adopt',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = adoptSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'installation_id is required');
+    res.json(await adoptInstallation(req.interviewer!.id, parsed.data.installation_id));
   }),
 );
 

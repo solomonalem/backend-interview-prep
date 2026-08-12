@@ -19,7 +19,7 @@ Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
 |---|---|
 | **GitHub App name** | `AssessIQ` (or `AssessIQ Dev` — names are globally unique) |
 | **Homepage URL** | `http://localhost:5173` in dev |
-| **Callback URL** | leave blank — we don't use user OAuth |
+| **Callback URL** | `http://localhost:3001/api/v1/integrations/github/oauth/callback` — used by Sync only (see below) |
 | **Setup URL** | `http://localhost:3001/api/v1/integrations/github/callback` |
 | **Redirect on update** | ✅ **checked** — so "change repositories" comes back to us too |
 | **Webhook** | **uncheck Active** for now (webhooks land in Slice 4) |
@@ -50,6 +50,11 @@ On the App's settings page:
   `GITHUB_APP_PRIVATE_KEY`
 - **Public link** — the URL slug, e.g. `https://github.com/apps/assessiq-dev`
   → the `assessiq-dev` part is `GITHUB_APP_SLUG`
+
+For **Sync from GitHub** (below), also collect:
+
+- **Client ID** — shown near the App ID, looks like `Iv1.…` → `GITHUB_CLIENT_ID`
+- **Client secret** — *Generate a new client secret* → `GITHUB_CLIENT_SECRET`
 
 `GITHUB_WEBHOOK_SECRET` is only needed once webhook-driven revocation lands in
 Slice 4. Set it now if you like — nothing reads it yet.
@@ -95,6 +100,33 @@ AssessIQ holds **no long-lived credential**. What it stores is the
 and expire after an hour. Revoking on GitHub (**Settings → Applications →
 Installed GitHub Apps → Configure → Uninstall**) cuts access immediately and
 irreversibly, whatever AssessIQ's own state says.
+
+## Sync from GitHub — when the redirect never happens
+
+GitHub redirects back to the Setup URL on a fresh install, and on an update only
+if *Redirect on update* is checked. Neither covers every path: a manager who
+installs or edits the app from **Settings → Applications** on github.com can end
+up with a working installation that AssessIQ has never heard of.
+
+**Sync from GitHub** recovers that. It does *not* work by listing the App's
+installations — `GET /app/installations` returns every customer's installation,
+so adopting from it would let one tenant claim another's repositories, breaking
+§2.4. Instead:
+
+1. The manager authorises AssessIQ against their **GitHub identity** (the App's
+   user-to-server flow — this is what the Callback URL and client secret are for).
+2. We call `GET /user/installations`, which returns only installations **that
+   user** can access. GitHub is the authority on whose is whose.
+3. That verified list is cached server-side for 10 minutes and shown to them.
+4. Adopting checks the chosen id against that list and refuses anything else.
+
+The user access token is used for exactly one call, in that one request, and is
+never stored. **Repository content is never read with it** — that always goes
+through an installation token, as §2.1 requires. The token proves *identity*, not
+access.
+
+Without `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, the install flow still works
+and the Sync button is simply hidden.
 
 ## Rotating the private key
 
