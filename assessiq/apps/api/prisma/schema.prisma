@@ -469,13 +469,95 @@ model RepoRef {
   full_name       String          // "org/repo"
   default_branch  String
 
-  // Set by Slice 2. A plain nullable column rather than a relation until the
-  // RepoScan model exists, so this migration stands alone.
+  // The most recent scan, for showing state without loading the whole history.
+  // Intentionally not a relation: RepoScan already points here, and a second
+  // FK in the other direction would make the two able to disagree.
   last_scan_id    String?
 
   created_at      DateTime        @default(now())
 
+  scans           RepoScan[]
+
   @@unique([integration_id, full_name])
   @@index([integration_id])
   @@map("repo_refs")
+}
+
+// ─── REPO SCANS (design §5) ──────────────────────────────────────────────────
+// One run of the pipeline: snapshot → detect stack → select files → analyse →
+// persist findings → wipe. The snapshot lives in a temp directory for the
+// duration of the job and is deleted in a finally block; NOTHING about it is
+// stored here beyond counts.
+
+model RepoScan {
+  id           String     @id @default(cuid())
+  repo_ref_id  String
+  repo_ref     RepoRef    @relation(fields: [repo_ref_id], references: [id], onDelete: Cascade)
+
+  status       ScanStatus @default(queued)
+  started_at   DateTime?
+  finished_at  DateTime?
+
+  // Readable failure text. Must never carry file contents (§2.2) — the pipeline
+  // constructs these messages itself rather than passing raw errors through.
+  error        String?
+
+  // { files_seen, files_selected, files_analyzed, tokens_used, stack: [...] }.
+  // Counts and labels only.
+  stats        Json?
+
+  // True when analysis failed partway: the findings from completed batches are
+  // kept rather than thrown away, but the scan is not a full picture.
+  partial      Boolean    @default(false)
+
+  created_at   DateTime   @default(now())
+
+  findings     RepoFinding[]
+
+  @@index([repo_ref_id])
+  @@map("repo_scans")
+}
+
+enum ScanStatus {
+  queued
+  cloning
+  analyzing
+  done
+  failed
+}
+
+// A derived observation about the repository. `detail` is prose written by the
+// analyser ABOUT the code — never the code itself. `excerpt` is the single
+// exception and is capped hard (§2.2): at most 3 lines, and empty in strict mode.
+model RepoFinding {
+  id           String      @id @default(cuid())
+  scan_id      String
+  scan         RepoScan    @relation(fields: [scan_id], references: [id], onDelete: Cascade)
+
+  kind         FindingKind
+  title        String      // e.g. "Outbox pattern in order-service"
+  detail       String      // 1–3 sentences, derived — never raw code
+
+  // Citation, so a manager can judge whether a grounded question is fair.
+  file_path    String?
+  line_start   Int?
+  line_end     Int?
+  excerpt      String?     // ≤3 lines; null in strict mode
+
+  // Question ids generated from this finding (Slice 3 writes these).
+  used_in_questions String[] @default([])
+
+  created_at   DateTime    @default(now())
+
+  @@index([scan_id])
+  @@index([kind])
+  @@map("repo_findings")
+}
+
+enum FindingKind {
+  stack
+  pattern
+  risk
+  architecture
+  domain
 }
