@@ -67,3 +67,68 @@ export interface SyncCandidatesResponse {
 export interface AdoptInstallationRequest {
   installation_id: string;
 }
+
+// ── Repo scanning, Slice 2 (design §5) ───────────────────────────────────────
+
+export type ScanStatus = 'queued' | 'cloning' | 'analyzing' | 'done' | 'failed';
+
+export type FindingKind = 'stack' | 'pattern' | 'risk' | 'architecture' | 'domain';
+
+export const FINDING_KINDS: FindingKind[] = [
+  'architecture',
+  'pattern',
+  'risk',
+  'stack',
+  'domain',
+];
+
+/** Counts and labels only — never anything derived from file contents. */
+export interface ScanStats {
+  files_seen: number;
+  files_selected: number;
+  files_analyzed: number;
+  tokens_used: number;
+  stack: string[];
+  libraries: string[];
+}
+
+export interface ScanView {
+  id: string;
+  repo_ref_id: string;
+  repo_full_name: string;
+  status: ScanStatus;
+  /** Set when analysis failed partway: findings are real but incomplete. */
+  partial: boolean;
+  error: string | null;
+  stats: ScanStats | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  finding_count: number;
+}
+
+/**
+ * A derived observation. `detail` is prose ABOUT the code. `excerpt` is the one
+ * place any source appears, capped at 3 lines and null in strict mode.
+ */
+export interface FindingView {
+  id: string;
+  kind: FindingKind;
+  title: string;
+  detail: string;
+  file_path: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  excerpt: string | null;
+}
+
+export interface ScanFindingsResponse {
+  scan: ScanView;
+  findings: FindingView[];
+}
+
+/** The most recent scan per repo, for the integrations screen. */
+export interface RepoScanSummary {
+  repo_ref_id: string;
+  latest: ScanView | null;
+}

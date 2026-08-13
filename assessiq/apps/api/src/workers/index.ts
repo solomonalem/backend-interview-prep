@@ -1,10 +1,16 @@
 // Worker process entry point (run separately: npm run dev:worker).
 import '../lib/load-env.js'; // must be first — populates process.env from .env
-import { anthropic, SCORING_MODEL } from '../lib/claude.js';
+import { anthropic, ANALYSIS_MODEL, SCORING_MODEL, SYNTHESIS_MODEL } from '../lib/claude.js';
 import { scoringWorker } from './scoring.worker.js';
+import { repoScanWorker } from './repo-scan.worker.js';
 
 console.log(
   `[assessiq-worker] scoring worker started — model: ${anthropic ? SCORING_MODEL : 'stub-dev (no ANTHROPIC_API_KEY)'}`,
+);
+console.log(
+  `[assessiq-worker] repo-scan worker started — models: ${
+    anthropic ? `${ANALYSIS_MODEL} → ${SYNTHESIS_MODEL}` : 'UNAVAILABLE (no ANTHROPIC_API_KEY)'
+  }`,
 );
 
 scoringWorker.on('completed', (job) => {
@@ -14,8 +20,16 @@ scoringWorker.on('failed', (job, err) => {
   console.error(`[scoring] job ${job?.id} failed:`, err.message);
 });
 
+repoScanWorker.on('completed', (job) => {
+  console.log(`[repo-scan] job ${job.id} completed (scan ${job.data.scanId})`);
+});
+repoScanWorker.on('failed', (job, err) => {
+  // runScan already recorded the failure on the scan row; this is operator noise.
+  console.error(`[repo-scan] job ${job?.id} failed:`, err.message);
+});
+
 async function shutdown() {
-  await scoringWorker.close();
+  await Promise.all([scoringWorker.close(), repoScanWorker.close()]);
   process.exit(0);
 }
 process.on('SIGTERM', shutdown);

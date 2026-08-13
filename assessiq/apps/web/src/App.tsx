@@ -12,6 +12,7 @@ import AssessmentBuilderPage from './pages/interviewer/AssessmentBuilderPage';
 import AssessmentDetailPage from './pages/interviewer/AssessmentDetailPage';
 import ReportPage from './pages/interviewer/ReportPage';
 import IntegrationsPage from './pages/interviewer/IntegrationsPage';
+import ScanPage from './pages/interviewer/ScanPage';
 
 import StudyDashboardPage from './pages/study/StudyDashboardPage';
 import StudyModePage from './pages/study/StudyModePage';
@@ -62,6 +63,7 @@ export default function App() {
             <Route path="/assessments/:id" element={<AssessmentDetailPage />} />
             <Route path="/reports/:id" element={<ReportPage />} />
             <Route path="/settings/integrations" element={<IntegrationsPage />} />
+            <Route path="/scans/:id" element={<ScanPage />} />
 
             <Route path="/study" element={<StudyDashboardPage />} />
             <Route path="/study/session" element={<StudyModePage />} />
