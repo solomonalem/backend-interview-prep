@@ -10,21 +10,36 @@ import {
   FileCode2,
   ShieldCheck,
   Loader2,
+  Wand2,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
-import type { FindingKind, FindingView, ScanFindingsResponse } from '@assessiq/types';
-import { FINDING_KINDS } from '@assessiq/types';
+import type {
+  Difficulty,
+  FindingKind,
+  FindingView,
+  QuestionDraft,
+  ScanFindingsResponse,
+} from '@assessiq/types';
+import { DIFFICULTIES, FINDING_KINDS } from '@assessiq/types';
+import { questionsApi } from '../../api/questions.api';
+import { QuestionReviewPanel } from '../../components/QuestionReviewPanel';
 import {
   Badge,
+  Button,
   Card,
   CardBody,
   CardHeader,
-  PageHeader,
-  Spinner,
   EmptyState,
+  Label,
+  PageHeader,
+  Select,
+  Spinner,
 } from '../../components/ui';
 import { integrationsApi } from '../../api/integrations.api';
 import { ApiRequestError } from '../../api/client';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { cn } from '../../lib/cn';
 
 // Each kind answers a different interview question, so they are grouped rather
 // than listed — a manager scanning for risks shouldn't have to read the stack.
@@ -122,6 +137,58 @@ export default function ScanPage() {
     void load();
   }, [load]);
 
+  // ── Grounded generation (design §6) ────────────────────────────────────────
+  // Nothing is pre-selected: which findings matter depends on the role being
+  // hired for, and that is the manager's judgement, not ours.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [seniority, setSeniority] = useState<Difficulty>('senior');
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QuestionDraft[]>([]);
+  const [reviewing, setReviewing] = useState<QuestionDraft | null>(null);
+  const [approved, setApproved] = useState(0);
+
+  const toggle = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const generate = async () => {
+    if (!picked.size || generating) return;
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const r = await questionsApi.generateFromRepo({
+        finding_ids: [...picked],
+        seniority,
+      });
+      // Drafts queue up and are reviewed one at a time — the review gate is
+      // unchanged, so nothing here can reach a candidate unapproved.
+      setQueue(r.questions);
+      setReviewing(r.questions[0] ?? null);
+      setPicked(new Set());
+      if (r.skipped.length) {
+        setGenError(
+          `${r.skipped.length} finding${r.skipped.length === 1 ? '' : 's'} produced nothing usable — ${r.skipped[0]!.reason}`,
+        );
+      }
+    } catch (e) {
+      setGenError(e instanceof ApiRequestError ? e.message : 'Could not generate questions.');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Advance through the queue as each draft is dealt with.
+  const nextDraft = (id: string) => {
+    const rest = queue.filter((q) => q.id !== id);
+    setQueue(rest);
+    setReviewing(rest[0] ?? null);
+  };
+
   const running = !!data && RUNNING.includes(data.scan.status);
   // Poll only while there is something to watch — a finished scan never changes.
   useLiveRefresh(load, { intervalMs: 3_000, enabled: running });
@@ -151,6 +218,19 @@ export default function ScanPage() {
 
   return (
     <>
+      {/* The SAME review panel the rest of the app uses. A repo-grounded
+          question earns no shortcut to vetted (design §6). */}
+      {reviewing && (
+        <QuestionReviewPanel
+          draft={reviewing}
+          onApproved={(q) => {
+            setApproved((n) => n + 1);
+            nextDraft(q.id);
+          }}
+          onRejected={(qid) => nextDraft(qid)}
+          onClose={() => setReviewing(null)}
+        />
+      )}
       <PageHeader
         title={scan.repo_full_name || 'Repository scan'}
         subtitle={STATUS_TEXT[scan.status] ?? scan.status}
@@ -266,6 +346,86 @@ export default function ScanPage() {
             </span>
           </div>
 
+          {/* Turn findings into questions. Which findings matter depends on the
+              role, so the manager picks — nothing is selected for them. */}
+          <Card className={cn(picked.size > 0 && 'ring-1 ring-brand-200')}>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <Wand2 size={16} className="text-brand-500" /> Generate questions from findings
+              </h3>
+              <Badge tone={picked.size ? 'brand' : 'slate'}>{picked.size} selected</Badge>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <p className="text-xs text-slate-400">
+                Select the findings that matter for the role. Each becomes a question a candidate
+                can reason about — described in neutral terms, with nothing identifying your
+                repository. Every one still goes through review before it can be used.
+              </p>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="w-40">
+                  <Label>Seniority</Label>
+                  <Select
+                    value={seniority}
+                    onChange={(e) => setSeniority(e.target.value as Difficulty)}
+                    disabled={generating}
+                  >
+                    {DIFFICULTIES.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <Button onClick={generate} disabled={!picked.size || generating}>
+                  {generating ? (
+                    <Spinner className="border-white/40 border-t-white" />
+                  ) : (
+                    <Wand2 size={16} />
+                  )}
+                  {generating
+                    ? 'Writing questions…'
+                    : `Generate from ${picked.size || 'selected'} finding${picked.size === 1 ? '' : 's'}`}
+                </Button>
+                {picked.size > 0 && !generating && (
+                  <button
+                    type="button"
+                    onClick={() => setPicked(new Set())}
+                    className="text-xs font-medium text-slate-400 hover:text-slate-600"
+                  >
+                    Clear
+                  </button>
+                )}
+                {approved > 0 && (
+                  <span className="text-xs font-medium text-emerald-600">
+                    {approved} approved into your bank
+                  </span>
+                )}
+              </div>
+              {generating && (
+                <p className="text-xs text-slate-500">
+                  Each finding is written up separately, so this takes a few seconds per finding.
+                </p>
+              )}
+              {genError && (
+                <p className="rounded-md border border-amber-100 bg-amber-50 px-2.5 py-2 text-xs text-amber-700">
+                  {genError}
+                </p>
+              )}
+              {queue.length > 0 && !reviewing && (
+                <p className="text-xs text-slate-500">
+                  {queue.length} draft{queue.length === 1 ? '' : 's'} still waiting for review.{' '}
+                  <button
+                    type="button"
+                    onClick={() => setReviewing(queue[0] ?? null)}
+                    className="font-medium text-brand-600 hover:text-brand-700"
+                  >
+                    Resume review
+                  </button>
+                </p>
+              )}
+            </CardBody>
+          </Card>
+
           {FINDING_KINDS.filter((k) => findings.some((f) => f.kind === k)).map((kind) => {
             const meta = KIND_META[kind];
             const group = findings.filter((f) => f.kind === kind);
@@ -279,18 +439,41 @@ export default function ScanPage() {
                 </CardHeader>
                 <CardBody className="space-y-4">
                   <p className="text-xs text-slate-400">{meta.blurb}</p>
-                  {group.map((f) => (
-                    <div
-                      key={f.id}
-                      className="rounded-lg border border-slate-100 bg-slate-50/60 px-4 py-3.5"
-                    >
-                      <p className="text-sm font-semibold text-slate-800">{f.title}</p>
-                      <p className="mt-1 max-w-[95ch] text-sm leading-relaxed text-slate-600">
-                        {f.detail}
-                      </p>
-                      <Citation f={f} />
-                    </div>
-                  ))}
+                  {group.map((f) => {
+                    const on = picked.has(f.id);
+                    return (
+                      <div
+                        key={f.id}
+                        className={cn(
+                          'rounded-lg border px-4 py-3.5 transition-colors',
+                          on
+                            ? 'border-brand-300 bg-brand-soft ring-1 ring-brand-200'
+                            : 'border-slate-100 bg-slate-50/60',
+                        )}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => toggle(f.id)}
+                          aria-pressed={on}
+                          disabled={generating}
+                          className="flex w-full items-start gap-3 text-left"
+                        >
+                          <span className={cn('mt-0.5 shrink-0', on ? 'text-brand-600' : 'text-slate-300')}>
+                            {on ? <CheckSquare size={16} /> : <Square size={16} />}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-semibold text-slate-800">{f.title}</span>
+                            <span className="mt-1 block max-w-[95ch] text-sm leading-relaxed text-slate-600">
+                              {f.detail}
+                            </span>
+                          </span>
+                        </button>
+                        <div className="pl-7">
+                          <Citation f={f} />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </CardBody>
               </Card>
             );

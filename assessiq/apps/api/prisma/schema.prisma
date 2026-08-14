@@ -48,6 +48,17 @@ model Question {
   senior_signal_display   String
   trap_display            String
 
+  // ── Provenance (design §4) ─────────────────────────────────────────────────
+  // Where this question came from. Trustworthy from Slice 3 onwards; rows that
+  // predate it all read `manual`, since nothing recorded the difference at the
+  // time and guessing retroactively would be worse than a known gap.
+  source        QuestionSource @default(manual)
+  // The finding that motivated it, giving question → finding → file:lines.
+  // SetNull rather than Cascade: a vetted question outlives the scan that
+  // inspired it, and losing the citation must not delete the question.
+  repo_finding_id String?
+  repo_finding    RepoFinding? @relation(fields: [repo_finding_id], references: [id], onDelete: SetNull)
+
   // Metadata
   is_active     Boolean       @default(true)
   // vetted = human-approved and safe to use as-is. draft = AI-generated and
@@ -70,6 +81,12 @@ model Question {
 enum QuestionStatus {
   vetted
   draft
+}
+
+enum QuestionSource {
+  manual       // written by a human
+  generated    // AI-written from a topic
+  repo_grounded // AI-written from a finding about the manager's own codebase
 }
 
 enum Difficulty {
@@ -544,8 +561,11 @@ model RepoFinding {
   line_end     Int?
   excerpt      String?     // ≤3 lines; null in strict mode
 
-  // Question ids generated from this finding (Slice 3 writes these).
+  // Question ids generated from this finding — a denormalised counter so the
+  // findings list can show "2 questions" without joining.
   used_in_questions String[] @default([])
+
+  questions    Question[]
 
   created_at   DateTime    @default(now())
 

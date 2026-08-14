@@ -14,6 +14,27 @@ export const QUESTION_TYPES: QuestionType[] = [
 // returns both, always labelled, so a draft can never pass for vetted.
 export type QuestionStatus = 'vetted' | 'draft';
 
+/** Where a question came from. Only meaningful for rows created from Slice 3 on. */
+export type QuestionSource = 'manual' | 'generated' | 'repo_grounded';
+
+/**
+ * Why a repo-grounded question exists: the finding it was written from, and
+ * where in the codebase that finding lives.
+ *
+ * INTERVIEWER-ONLY. This is never part of a candidate payload — a candidate
+ * must not learn which repository, file or line an assessment was built from
+ * (design §10, non-goals).
+ */
+export interface QuestionGrounding {
+  finding_id: string;
+  finding_title: string;
+  finding_kind: string;
+  repo_full_name: string;
+  file_path: string | null;
+  line_start: number | null;
+  line_end: number | null;
+}
+
 // Public shape of a question — NEVER includes the private `_guide` rubric fields.
 export interface QuestionListItem {
   id: string;
@@ -26,6 +47,10 @@ export interface QuestionListItem {
   core_answer_display: string;
   senior_signal_display: string;
   trap_display: string;
+  /** 'manual' for anything created before provenance was recorded. */
+  source: QuestionSource;
+  /** Present only on repo_grounded questions, and only for interviewers. */
+  grounding?: QuestionGrounding | null;
 }
 
 export interface QuestionListResponse {
@@ -37,6 +62,8 @@ export interface QuestionListResponse {
 
 export interface QuestionFilters {
   topic?: string;
+  /** Retrieve by provenance — used by the builder's "From your codebase" source. */
+  source?: QuestionSource;
   difficulty?: Difficulty;
   type?: QuestionType;
   domain?: string;
@@ -107,6 +134,30 @@ export interface QuestionDraft {
   core_answer_display: string;
   senior_signal_display: string;
   trap_display: string;
+  source: QuestionSource;
+  /** Shown in the review panel so the manager can judge whether the question
+   *  is fair and accurate about their own system. */
+  grounding?: QuestionGrounding | null;
+}
+
+/**
+ * POST /questions/generate-from-repo — write questions from scan findings.
+ * Output is ordinary drafts: same rubric, same mandatory review, same vetted
+ * gate. Grounding changes what the question is about, not how it is approved.
+ */
+export interface GenerateFromRepoRequest {
+  /** Findings to ground in. Each produces its own question(s). */
+  finding_ids: string[];
+  seniority: Difficulty;
+  type?: QuestionType;
+  /** Questions per finding. Defaults to 1. */
+  count_per_finding?: number;
+}
+
+export interface GenerateFromRepoResponse {
+  questions: QuestionDraft[];
+  /** Findings that produced nothing usable, so the UI can say which. */
+  skipped: { finding_id: string; reason: string }[];
 }
 
 export interface GenerateQuestionsRequest {
