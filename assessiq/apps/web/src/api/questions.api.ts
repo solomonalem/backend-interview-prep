@@ -3,6 +3,7 @@ import type {
   DraftRubricRequest,
   GenerateFromRepoRequest,
   GenerateFromRepoResponse,
+  GroundedQuestionsResponse,
   GenerateQuestionsRequest,
   GenerateQuestionsResponse,
   QuestionDraft,
@@ -55,8 +56,14 @@ export const questionsApi = {
     api.post<GenerateQuestionsResponse>('/questions/generate', body),
 
   // Questions written from scan findings. Ordinary drafts — same review gate.
+  // 202 — queued, not generated. Poll `grounded` for the drafts as they land.
   generateFromRepo: (body: GenerateFromRepoRequest) =>
     api.post<GenerateFromRepoResponse>('/questions/generate-from-repo', body),
+
+  grounded: (scanId?: string) =>
+    api.get<GroundedQuestionsResponse>(
+      `/questions/grounded${scanId ? `?scan_id=${scanId}` : ''}`,
+    ),
 
   // Manager writes the question, AI drafts its rubric. Same review flow.
   draftRubric: (body: DraftRubricRequest) => api.post<QuestionDraft>('/questions/draft-rubric', body),
