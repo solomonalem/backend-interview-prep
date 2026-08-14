@@ -1,6 +1,8 @@
 import type {
   ApproveQuestionRequest,
   DraftRubricRequest,
+  GenerateFromRepoRequest,
+  GenerateFromRepoResponse,
   GenerateQuestionsRequest,
   GenerateQuestionsResponse,
   QuestionDraft,
@@ -51,6 +53,10 @@ export const questionsApi = {
 
   generate: (body: GenerateQuestionsRequest) =>
     api.post<GenerateQuestionsResponse>('/questions/generate', body),
+
+  // Questions written from scan findings. Ordinary drafts — same review gate.
+  generateFromRepo: (body: GenerateFromRepoRequest) =>
+    api.post<GenerateFromRepoResponse>('/questions/generate-from-repo', body),
 
   // Manager writes the question, AI drafts its rubric. Same review flow.
   draftRubric: (body: DraftRubricRequest) => api.post<QuestionDraft>('/questions/draft-rubric', body),

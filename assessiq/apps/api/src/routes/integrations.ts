@@ -13,6 +13,7 @@ import {
   getSyncCandidates,
   startSync,
 } from '../services/integration.service.js';
+import { latestScans, startScan } from '../services/scan.service.js';
 
 export const integrationsRouter = Router();
 
@@ -178,13 +179,24 @@ integrationsRouter.delete(
   }),
 );
 
-// POST /integrations/github/repos/:id/scan lands in Slice 2, with the scan
-// pipeline it enqueues onto. Declared here as a 501 rather than a 404 so the
-// route's absence reads as "not built yet", not "wrong URL".
+// POST /integrations/github/repos/:id/scan — enqueue a scan and return it
+// immediately. The pipeline runs in the worker; the manager polls the scan.
 integrationsRouter.post(
   '/github/repos/:id/scan',
   authInterviewer,
-  asyncHandler(async () => {
-    throw new AppError(501, 'NOT_IMPLEMENTED', 'Repository scanning arrives in Slice 2');
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'repository id is required');
+    res.status(202).json(await startScan(req.interviewer!.id, id));
+  }),
+);
+
+// GET /integrations/github/scans — the latest scan per repo, so the
+// integrations screen can show state without a request per row.
+integrationsRouter.get(
+  '/github/scans',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    res.json({ scans: await latestScans(req.interviewer!.id) });
   }),
 );

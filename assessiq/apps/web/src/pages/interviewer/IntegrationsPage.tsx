@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Github,
   ShieldCheck,
@@ -11,8 +11,10 @@ import {
   BookLock,
   RefreshCw,
   Download,
+  Radar,
 } from 'lucide-react';
-import type { IntegrationStatusResponse, SyncCandidate } from '@assessiq/types';
+import type { IntegrationStatusResponse, ScanView, SyncCandidate } from '@assessiq/types';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import {
   Badge,
   Button,
@@ -63,6 +65,13 @@ const CALLBACK_MESSAGE: Record<string, { tone: 'ok' | 'warn'; text: string }> = 
   },
 };
 
+const SCAN_RUNNING = ['queued', 'cloning', 'analyzing'];
+const SCAN_LABEL: Record<string, string> = {
+  queued: 'queued…',
+  cloning: 'fetching…',
+  analyzing: 'analysing…',
+};
+
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, {
     year: 'numeric',
@@ -78,13 +87,20 @@ export default function IntegrationsPage() {
   const [busy, setBusy] = useState<'connect' | 'disconnect' | 'sync' | string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<SyncCandidate[]>([]);
+  const [scans, setScans] = useState<Record<string, ScanView>>({});
+  const navigate = useNavigate();
 
   const callback = params.get('github');
   const notice = callback ? CALLBACK_MESSAGE[callback] : undefined;
 
   const load = useCallback(async () => {
     try {
-      setData(await integrationsApi.github());
+      const [status, scanState] = await Promise.all([
+        integrationsApi.github(),
+        integrationsApi.scans().catch(() => ({ scans: {} })),
+      ]);
+      setData(status);
+      setScans(scanState.scans);
       setError(null);
     } catch (e) {
       setError(e instanceof ApiRequestError ? e.message : 'Could not load your integrations.');
@@ -93,9 +109,28 @@ export default function IntegrationsPage() {
     }
   }, []);
 
+  const scanRepo = async (repoRefId: string) => {
+    setBusy(`scan:${repoRefId}`);
+    setError(null);
+    try {
+      const scan = await integrationsApi.scan(repoRefId);
+      // Straight to the scan — it is the thing they now want to watch.
+      navigate(`/scans/${scan.id}`);
+    } catch (e) {
+      setError(e instanceof ApiRequestError ? e.message : 'Could not start the scan.');
+      setBusy(null);
+    }
+  };
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Keep row state current while any scan is in flight, and stop once none is.
+  useLiveRefresh(load, {
+    intervalMs: 5_000,
+    enabled: Object.values(scans).some((s) => SCAN_RUNNING.includes(s.status)),
+  });
 
   // After the authorisation leg, the verified installations are waiting
   // server-side. Fetch them so the manager can adopt one.
@@ -390,24 +425,56 @@ export default function IntegrationsPage() {
             />
           ) : (
             <div className="space-y-2">
-              {integration.repos.map((r) => (
-                <div
-                  key={r.id}
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-4 py-3"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-800 truncate">{r.full_name}</p>
-                    <p className="mt-0.5 text-xs text-slate-400">
-                      default branch <span className="text-slate-500">{r.default_branch}</span>
-                    </p>
+              {integration.repos.map((r) => {
+                const scan = scans[r.id];
+                const running = scan ? SCAN_RUNNING.includes(scan.status) : false;
+                return (
+                  <div
+                    key={r.id}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-slate-800 truncate">{r.full_name}</p>
+                      <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
+                        <span>
+                          default branch <span className="text-slate-500">{r.default_branch}</span>
+                        </span>
+                        {scan && (
+                          <>
+                            <span className="text-slate-300">·</span>
+                            <Link
+                              to={`/scans/${scan.id}`}
+                              className="font-medium text-brand-600 hover:text-brand-700"
+                            >
+                              {running
+                                ? SCAN_LABEL[scan.status]
+                                : scan.status === 'failed'
+                                  ? 'last scan failed'
+                                  : `${scan.finding_count} finding${scan.finding_count === 1 ? '' : 's'}`}
+                            </Link>
+                            {scan.partial && <Badge tone="amber">partial</Badge>}
+                          </>
+                        )}
+                      </p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      onClick={() => scanRepo(r.id)}
+                      disabled={busy !== null || running || !connected}
+                      title={
+                        !connected
+                          ? 'Reconnect before scanning'
+                          : running
+                            ? 'A scan is already running'
+                            : undefined
+                      }
+                    >
+                      {busy === `scan:${r.id}` || running ? <Spinner /> : <Radar size={15} />}
+                      {scan && !running ? 'Re-scan' : 'Scan'}
+                    </Button>
                   </div>
-                  {/* Scanning is Slice 2 — the button is stated as coming, not
-                      shown as broken. */}
-                  <Button variant="secondary" disabled title="Scanning arrives in the next slice">
-                    Scan
-                  </Button>
-                </div>
-              ))}
+                );
+              })}
               {integration.status === 'revoked' && (
                 <p className="pt-1 text-xs text-slate-400">
                   This integration is disconnected. The repositories above are kept for reference —

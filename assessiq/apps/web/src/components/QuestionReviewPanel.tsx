@@ -13,6 +13,7 @@ import {
   Eye,
   Scale,
   MessageSquareText,
+  FileCode2,
 } from 'lucide-react';
 import type { ApproveQuestionRequest, QuestionDraft } from '@assessiq/types';
 import { questionsApi } from '../api/questions.api';
@@ -289,6 +290,7 @@ export function QuestionReviewPanel({
                 </span>
                 <h3 className="font-semibold text-slate-800">Review before use</h3>
                 <Badge tone="amber">AI-generated</Badge>
+                {d.source === 'repo_grounded' && <Badge tone="emerald">Grounded in your code</Badge>}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 <Badge tone="brand">{d.topic}</Badge>
@@ -310,6 +312,33 @@ export function QuestionReviewPanel({
 
         {/* BODY */}
         <div className="flex-1 space-y-5 overflow-y-auto bg-slate-50/60 px-6 py-5">
+          {/* What in their own codebase motivated this question (design §6).
+              Sits above the question because it is the context the manager
+              needs to judge whether the question is fair and accurate. */}
+          {d.grounding && (
+            <section className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                <FileCode2 size={12} /> Grounded in your codebase
+              </p>
+              <p className="text-sm font-medium text-slate-800">{d.grounding.finding_title}</p>
+              <p className="mt-1 font-mono text-[11px] text-slate-500">
+                {d.grounding.repo_full_name}
+                {d.grounding.file_path ? ` · ${d.grounding.file_path}` : ''}
+                {d.grounding.line_start
+                  ? ` L${d.grounding.line_start}${
+                      d.grounding.line_end && d.grounding.line_end !== d.grounding.line_start
+                        ? `–${d.grounding.line_end}`
+                        : ''
+                    }`
+                  : ''}
+              </p>
+              <p className="mt-2 text-[11px] text-emerald-800">
+                The candidate never sees any of this — not the repository, the file, or that the
+                question came from your code.
+              </p>
+            </section>
+          )}
+
           {/* The question itself gets top billing — it's the thing being asked. */}
           <section className="rounded-xl border border-slate-200 bg-white p-5">
             <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">

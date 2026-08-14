@@ -3,6 +3,8 @@ import type {
   ApproveQuestionRequest,
   Difficulty,
   DraftRubricRequest,
+  GenerateFromRepoRequest,
+  GenerateFromRepoResponse,
   GenerateQuestionsRequest,
   QuestionDraft,
   QuestionMatchItem,
@@ -34,7 +36,43 @@ const DRAFT_SELECT = {
   core_answer_display: true,
   senior_signal_display: true,
   trap_display: true,
+  source: true,
+  // Provenance for the review panel: the manager judging a repo-grounded
+  // question needs to see what in their codebase motivated it.
+  repo_finding: {
+    select: {
+      id: true,
+      title: true,
+      kind: true,
+      file_path: true,
+      line_start: true,
+      line_end: true,
+      scan: { select: { repo_ref: { select: { full_name: true } } } },
+    },
+  },
 } satisfies Prisma.QuestionSelect;
+
+type DraftRow = Prisma.QuestionGetPayload<{ select: typeof DRAFT_SELECT }>;
+
+/** Flatten the joined finding into the shape the UI reads. */
+function toDraft(row: DraftRow): QuestionDraft {
+  const f = row.repo_finding;
+  const { repo_finding: _drop, ...rest } = row;
+  return {
+    ...(rest as unknown as QuestionDraft),
+    grounding: f
+      ? {
+          finding_id: f.id,
+          finding_title: f.title,
+          finding_kind: f.kind,
+          repo_full_name: f.scan?.repo_ref?.full_name ?? '',
+          file_path: f.file_path,
+          line_start: f.line_start,
+          line_end: f.line_end,
+        }
+      : null,
+  };
+}
 
 // Generation wants variety between drafts; the rubric is kept precise by the
 // prompt's explicit requirements, not by clamping the sampler to 0.
@@ -45,6 +83,7 @@ const GENERATION_TEMPERATURE = 0.7;
 // Batch instead, and size the budget for a full batch plus headroom.
 const MAX_QUESTIONS_PER_CALL = 3;
 const GENERATION_MAX_TOKENS = 8000;
+const GENERATION_TIMEOUT_MS = 120_000;
 
 const RUBRIC_SPEC = `Every question MUST carry a complete four-part rubric — an answer cannot be
 scored without one. The four components and their scoring weights:
@@ -139,8 +178,21 @@ function validate(raw: RawGenerated, fallback: { topic: string; seniority: Diffi
 }
 
 function isTransient(err: unknown): boolean {
-  const e = err as { name?: string; status?: number; code?: string; cause?: { code?: string } };
-  if (e?.name === 'APIConnectionError' || e?.name === 'APIConnectionTimeoutError') return true;
+  const e = err as {
+    name?: string;
+    message?: string;
+    status?: number;
+    code?: string;
+    cause?: { code?: string };
+  };
+  // Match the class name as well as `name`. The SDK's timeout error reports a
+  // `name` that is not its constructor name, so keying on `name` alone silently
+  // classified every timeout as permanent — the log said "giving up" on exactly
+  // the failure the retry exists for.
+  const kind = e?.name ?? '';
+  const cls = (err as object)?.constructor?.name ?? '';
+  if (/APIConnection(Timeout)?Error|APIUserAbortError/.test(`${kind} ${cls}`)) return true;
+  if (/timed out|timeout|socket hang up|aborted/i.test(e?.message ?? '')) return true;
   const code = e?.code ?? e?.cause?.code;
   if (code && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) {
     return true;
@@ -161,13 +213,19 @@ async function callGenerator(system: string, user: string): Promise<{ questions:
   }
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const res = await anthropic.messages.create({
-        model: GENERATION_MODEL,
-        max_tokens: GENERATION_MAX_TOKENS,
-        temperature: GENERATION_TEMPERATURE,
-        system,
-        messages: [{ role: 'user', content: user }],
-      });
+      const res = await anthropic.messages.create(
+        {
+          model: GENERATION_MODEL,
+          max_tokens: GENERATION_MAX_TOKENS,
+          temperature: GENERATION_TEMPERATURE,
+          system,
+          messages: [{ role: 'user', content: user }],
+        },
+        // A question plus seven rubric fields is a long completion, and the
+        // SDK's default budget is derived from max_tokens rather than from how
+        // slow the model actually is. Give it room explicitly.
+        { timeout: GENERATION_TIMEOUT_MS },
+      );
       // Truncation surfaces as unterminated JSON several frames later, which
       // is a confusing way to learn the budget was too small. Name it here.
       if (res.stop_reason === 'max_tokens') {
@@ -275,13 +333,164 @@ ${JSON_SHAPE}`;
   const created: QuestionDraft[] = [];
   for (const row of rows.slice(0, count)) {
     created.push(
-      (await prisma.question.create({
-        data: { ...row, status: 'draft', is_active: true, created_by: interviewerId },
-        select: DRAFT_SELECT,
-      })) as QuestionDraft,
+      toDraft(
+        await prisma.question.create({
+          data: {
+            ...row,
+            status: 'draft',
+            is_active: true,
+            created_by: interviewerId,
+            source: 'generated',
+          },
+          select: DRAFT_SELECT,
+        }),
+      ),
     );
   }
   return created;
+}
+
+// ── Repo-grounded generation (design §6) ─────────────────────────────────────
+/**
+ * Write questions from scan findings — the moat feature: a question about the
+ * system the candidate would actually work on, not a generic one about the
+ * technology it happens to use.
+ *
+ * Everything downstream is deliberately unchanged. Same rubric spec, same
+ * generator, same `status: draft`, same mandatory review before anything
+ * reaches a candidate. Grounding changes what a question is ABOUT; it earns no
+ * shortcut through approval.
+ *
+ * Findings are loaded owner-scoped, so one manager cannot generate questions
+ * from another's codebase.
+ */
+export async function generateFromFindings(
+  input: GenerateFromRepoRequest,
+  interviewerId: string,
+): Promise<GenerateFromRepoResponse> {
+  const ids = [...new Set(input.finding_ids)].slice(0, 20);
+  if (!ids.length) {
+    throw new AppError(400, 'VALIDATION', 'Select at least one finding');
+  }
+
+  const findings = await prisma.repoFinding.findMany({
+    where: { id: { in: ids }, scan: { repo_ref: { integration: { owner_id: interviewerId } } } },
+    include: { scan: { select: { repo_ref: { select: { full_name: true } } } } },
+  });
+  if (!findings.length) {
+    throw new AppError(404, 'FINDING_NOT_FOUND', 'No findings of yours matched');
+  }
+
+  const perFinding = Math.min(3, Math.max(1, input.count_per_finding ?? 1));
+  const questions: QuestionDraft[] = [];
+  const skipped: GenerateFromRepoResponse['skipped'] = [];
+
+  // Sequential, one finding at a time. Concurrency here would multiply the
+  // Claude rate-limit pressure for a manager who is watching a single panel,
+  // and the failure of one finding must not take down the batch.
+  for (const f of findings) {
+    const citation = f.file_path
+      ? `${f.file_path}${f.line_start ? ` lines ${f.line_start}–${f.line_end ?? f.line_start}` : ''}`
+      : 'no specific file';
+
+    const system = `You write technical interview questions and their scoring rubrics for a
+senior-engineering assessment platform. Return ONLY a JSON object, no prose, no markdown.
+
+${RUBRIC_SPEC}`;
+
+    const user = `Write ${perFinding} interview question${perFinding === 1 ? '' : 's'} grounded in a REAL finding
+about the hiring team's own codebase.
+
+Finding (${f.kind}): ${f.title}
+What was observed: ${f.detail}
+Where: ${citation}
+${f.excerpt ? `Representative lines:\n${f.excerpt}` : ''}
+
+Seniority: ${input.seniority}
+${input.type ? `Question type: ${input.type}` : 'Question type: choose whichever best suits the finding'}
+
+Rules that matter here:
+- Ask the candidate to REASON about the situation the finding describes. Do not
+  ask them to recall a definition.
+- Describe the situation in neutral, generic terms. NEVER name the company, the
+  repository, the file, or anything that identifies whose codebase this is —
+  the candidate must not be able to tell. "A service that exchanges third-party
+  API tokens" — not "SaveLoom's Plaid integration".
+- This applies to EVERY field, not just the question: the rubric must not carry
+  identifiers lifted from the code either — no env var names, table names,
+  class names, route paths or vendor names. Describe them by role instead ("the
+  shared signing secret", "the token-exchange endpoint"). A rubric is read by
+  people; an identifier that survives into it leaks the source just as surely.
+- The question must stand on its own: a candidate with no access to this code
+  must be able to answer it from the description you give.
+- Put the real tension in senior_signal — the tradeoff or failure mode the
+  finding exposes is exactly what separates a senior answer here.
+
+topic: a short technology or concept label for retrieval, e.g. "Idempotency",
+"OAuth", "Postgres". Not the finding's title.
+
+Each question must be answerable in a few paragraphs of prose — no coding exercises.
+
+Return exactly:
+${JSON_SHAPE}`;
+
+    try {
+      const parsed = await callGenerator(system, user);
+      const rows = (parsed.questions ?? [])
+        // The model picks the topic here, unlike topic-driven generation where
+        // the caller's topic is the retrieval key — a finding has no topic of
+        // its own, so a sensible label is the best available.
+        .map((raw) =>
+          validate(
+            { ...raw, topic: raw.topic?.trim() || f.kind },
+            { topic: raw.topic?.trim() || f.kind, seniority: input.seniority },
+          ),
+        )
+        .filter((r): r is NonNullable<typeof r> => r !== null)
+        .slice(0, perFinding);
+
+      if (!rows.length) {
+        skipped.push({ finding_id: f.id, reason: 'no question came back with a complete rubric' });
+        continue;
+      }
+
+      for (const row of rows) {
+        const created = await prisma.question.create({
+          data: {
+            ...row,
+            status: 'draft',
+            is_active: true,
+            created_by: interviewerId,
+            source: 'repo_grounded',
+            repo_finding_id: f.id,
+          },
+          select: DRAFT_SELECT,
+        });
+        questions.push(toDraft(created));
+      }
+
+      await prisma.repoFinding.update({
+        where: { id: f.id },
+        data: { used_in_questions: { push: rows.map((_, i) => questions[questions.length - rows.length + i]!.id) } },
+      });
+    } catch (err) {
+      // One finding failing is not the request failing — the manager keeps
+      // whatever the others produced.
+      skipped.push({
+        finding_id: f.id,
+        reason: err instanceof AppError ? err.message : 'generation failed',
+      });
+    }
+  }
+
+  if (!questions.length) {
+    throw new AppError(
+      502,
+      'GENERATION_FAILED',
+      skipped[0]?.reason ?? 'No questions could be generated from those findings.',
+    );
+  }
+  return { questions, skipped };
 }
 
 /**
@@ -318,16 +527,20 @@ ${JSON_SHAPE}`;
   }
   // The manager's wording wins — the model may have tidied it despite the
   // instruction, and it is their question.
-  return (await prisma.question.create({
-    data: {
-      ...row,
-      text: input.text.trim(),
-      status: 'draft',
-      is_active: true,
-      created_by: interviewerId,
-    },
-    select: DRAFT_SELECT,
-  })) as QuestionDraft;
+  return toDraft(
+    await prisma.question.create({
+      data: {
+        ...row,
+        text: input.text.trim(),
+        status: 'draft',
+        is_active: true,
+        created_by: interviewerId,
+        // The manager wrote the question; only the rubric is AI-drafted.
+        source: 'manual',
+      },
+      select: DRAFT_SELECT,
+    }),
+  );
 }
 
 async function loadDraft(id: string, interviewerId: string) {
@@ -339,7 +552,7 @@ async function loadDraft(id: string, interviewerId: string) {
   if (q.status !== 'draft') {
     throw new AppError(409, 'NOT_A_DRAFT', 'This question has already been reviewed.');
   }
-  return q as QuestionDraft;
+  return toDraft(q);
 }
 
 /**
@@ -410,11 +623,9 @@ ${JSON_SHAPE}`;
     : null;
   if (!row) throw new AppError(502, 'GENERATION_FAILED', 'Refinement did not return a usable draft.');
 
-  return (await prisma.question.update({
-    where: { id },
-    data: row,
-    select: DRAFT_SELECT,
-  })) as QuestionDraft;
+  return toDraft(
+    await prisma.question.update({ where: { id }, data: row, select: DRAFT_SELECT }),
+  );
 }
 
 /**
@@ -433,11 +644,7 @@ export async function approveDraft(
       (data as Record<string, unknown>)[k] = v.trim();
     }
   }
-  return (await prisma.question.update({
-    where: { id },
-    data,
-    select: DRAFT_SELECT,
-  })) as QuestionDraft;
+  return toDraft(await prisma.question.update({ where: { id }, data, select: DRAFT_SELECT }));
 }
 
 /**
@@ -555,6 +762,7 @@ export async function buildQuestionPool(
     type: q.type,
     domain: q.domain,
     status: q.status,
+    source: q.source,
     core_answer_display: q.core_answer_display,
     senior_signal_display: q.senior_signal_display,
     trap_display: q.trap_display,

@@ -14,6 +14,7 @@ import {
   Wand2,
   PenLine,
   History,
+  FileCode2,
 } from 'lucide-react';
 import type {
   CreateAssessmentRequest,
@@ -194,6 +195,10 @@ export default function AssessmentBuilderPage() {
   // ── Previously used — the third source, alongside search and write-your-own.
   // Vetted and already used, so these go straight to the tray with no review.
   const [previouslyUsed, setPreviouslyUsed] = useState<PreviouslyUsedQuestion[]>([]);
+  // Fourth source (design §8.3): questions written from this manager's own
+  // codebase. Only appears when there are any — an empty card for a manager
+  // with no integration is noise.
+  const [grounded, setGrounded] = useState<QuestionListItem[]>([]);
   const [loadingPrev, setLoadingPrev] = useState(true);
   const [prevError, setPrevError] = useState<string | null>(null);
   const [showAllPrev, setShowAllPrev] = useState(false);
@@ -227,6 +232,15 @@ export default function AssessmentBuilderPage() {
       .list({ limit: 100 })
       .then((r) => setTopicHints([...new Set(r.questions.map((q) => q.topic))]))
       .catch(() => setTopicHints([]));
+  }, []);
+
+  // Repo-grounded questions. Vetted ones go straight to the tray; drafts still
+  // route through review, exactly like any other draft.
+  useEffect(() => {
+    questionsApi
+      .list({ source: 'repo_grounded', limit: 50 })
+      .then((r) => setGrounded(r.questions))
+      .catch(() => setGrounded([]));
   }, []);
 
   // Reuse history. Independent of the position fields — it is the manager's own
@@ -372,6 +386,7 @@ export default function AssessmentBuilderPage() {
         type: q.type,
         domain: q.domain,
         status: q.status,
+        source: q.source,
         core_answer_display: q.core_answer_display,
         senior_signal_display: q.senior_signal_display,
         trap_display: q.trap_display,
@@ -394,6 +409,7 @@ export default function AssessmentBuilderPage() {
     const found: QuestionListItem | undefined =
       results?.find((q) => q.id === id) ??
       previouslyUsed.find((q) => q.id === id) ??
+      grounded.find((q) => q.id === id) ??
       tray.get(id);
     if (!found) return;
 
@@ -434,6 +450,7 @@ export default function AssessmentBuilderPage() {
       type: q.type,
       domain: q.domain,
       status: q.status,
+      source: q.source,
       core_answer_display: q.core_answer_display,
       senior_signal_display: q.senior_signal_display,
       trap_display: q.trap_display,
@@ -785,6 +802,40 @@ export default function AssessmentBuilderPage() {
               </fieldset>
             </CardBody>
           </Card>
+
+          {/* From your codebase — questions grounded in a real scan finding.
+              Hidden entirely when there are none, so a manager without a
+              connected repository never sees a dead card. */}
+          {grounded.length > 0 && (
+            <Card>
+              <CardHeader>
+                <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                  <FileCode2 size={16} className="text-emerald-600" /> Or use a question from your
+                  codebase
+                </h3>
+                <span className="text-xs text-slate-400">{grounded.length} grounded</span>
+              </CardHeader>
+              <CardBody className="space-y-3">
+                <p className="text-xs text-slate-400">
+                  Written from findings in a repository you connected. Candidates never see the
+                  repository, the file, or that the question came from your code.
+                </p>
+                <fieldset
+                  disabled={busy}
+                  className={cn('grid items-start gap-2.5 2xl:grid-cols-2', busy && 'opacity-60')}
+                >
+                  {grounded.map((q) => (
+                    <QuestionCard
+                      key={q.id}
+                      question={q}
+                      selected={tray.has(q.id)}
+                      onToggle={toggleQuestion}
+                    />
+                  ))}
+                </fieldset>
+              </CardBody>
+            </Card>
+          )}
 
           {/* Previously used — the third source. Not a search and not a
               generation: it is this manager's own history, so it needs no

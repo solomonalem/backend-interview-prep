@@ -12,6 +12,7 @@ import {
   approveDraft,
   buildQuestionPool,
   draftRubricForQuestion,
+  generateFromFindings,
   generateQuestions,
   getDraftForReview,
   refineDraft,
@@ -22,6 +23,7 @@ export const questionsRouter = Router();
 
 const filterSchema = z.object({
   topic: z.string().optional(),
+  source: z.enum(['manual', 'generated', 'repo_grounded']).optional(),
   difficulty: z.enum(['junior', 'mid', 'senior', 'staff']).optional(),
   type: z.enum(['conceptual', 'scenario', 'rca', 'design', 'behavioral']).optional(),
   domain: z.string().optional(),
@@ -137,6 +139,28 @@ questionsRouter.post(
       throw new AppError(400, 'VALIDATION', 'technology and seniority are required');
     }
     res.json(await buildQuestionPool(parsed.data, req.interviewer!.id));
+  }),
+);
+
+const fromRepoSchema = z.object({
+  finding_ids: z.array(z.string().min(1)).min(1).max(20),
+  seniority: difficultyEnum,
+  type: typeEnum.optional(),
+  count_per_finding: z.number().int().min(1).max(3).optional(),
+});
+
+// POST /questions/generate-from-repo — questions grounded in the manager's own
+// codebase. Output is ordinary drafts: the review gate is unchanged, because
+// grounding changes what a question is about, not how it earns approval.
+questionsRouter.post(
+  '/generate-from-repo',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = fromRepoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION', 'finding_ids and seniority are required');
+    }
+    res.status(201).json(await generateFromFindings(parsed.data, req.interviewer!.id));
   }),
 );
 
