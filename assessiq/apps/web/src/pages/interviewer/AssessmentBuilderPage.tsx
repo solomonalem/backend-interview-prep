@@ -239,7 +239,14 @@ export default function AssessmentBuilderPage() {
   useEffect(() => {
     questionsApi
       .list({ source: 'repo_grounded', limit: 50 })
-      .then((r) => setGrounded(r.questions))
+      // Vetted first: those are usable right now, drafts still need review.
+      .then((r) =>
+        setGrounded(
+          [...r.questions].sort((a, b) =>
+            a.status === b.status ? 0 : a.status === 'vetted' ? -1 : 1,
+          ),
+        ),
+      )
       .catch(() => setGrounded([]));
   }, []);
 
@@ -813,12 +820,17 @@ export default function AssessmentBuilderPage() {
                   <FileCode2 size={16} className="text-emerald-600" /> Or use a question from your
                   codebase
                 </h3>
-                <span className="text-xs text-slate-400">{grounded.length} grounded</span>
+                <span className="text-xs text-slate-400">
+                  {grounded.filter((q) => q.status === 'vetted').length} ready
+                  {grounded.some((q) => q.status === 'draft') &&
+                    ` · ${grounded.filter((q) => q.status === 'draft').length} need review`}
+                </span>
               </CardHeader>
               <CardBody className="space-y-3">
                 <p className="text-xs text-slate-400">
-                  Written from findings in a repository you connected. Candidates never see the
-                  repository, the file, or that the question came from your code.
+                  Written from findings in a repository you connected — this is where a question
+                  you approved on a scan ends up. Candidates never see the repository, the file, or
+                  that the question came from your code.
                 </p>
                 <fieldset
                   disabled={busy}
