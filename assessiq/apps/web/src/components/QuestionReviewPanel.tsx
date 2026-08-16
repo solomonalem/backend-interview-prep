@@ -207,8 +207,17 @@ export function QuestionReviewPanel({
   const [busy, setBusy] = useState<null | 'refine' | 'approve' | 'reject'>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // A refine replaces the draft in place; reset the editor to the new version.
-  useEffect(() => setD(draft), [draft.id]);
+  // A refine replaces the draft in place, and approving can swap the NEXT draft
+  // in without unmounting. Reset the whole editor, not just the content: the
+  // panel used to keep `busy` at 'approve' across that swap, which left the
+  // buttons spinning on a draft that had never been submitted — the only way
+  // out was closing and reopening the panel.
+  useEffect(() => {
+    setD(draft);
+    setBusy(null);
+    setError(null);
+    setInstruction('');
+  }, [draft.id]);
 
   // Escape closes, matching every other dismissable surface.
   useEffect(() => {

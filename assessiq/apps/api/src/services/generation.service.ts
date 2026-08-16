@@ -5,6 +5,7 @@ import type {
   DraftRubricRequest,
   GenerateFromRepoRequest,
   GenerateFromRepoResponse,
+  GroundedQuestionsResponse,
   GenerateQuestionsRequest,
   QuestionDraft,
   QuestionMatchItem,
@@ -17,6 +18,7 @@ import { prisma } from '../lib/prisma.js';
 import { anthropic, GENERATION_MODEL } from '../lib/claude.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { matchQuestions } from './question.service.js';
+import { questionGenQueue } from '../queues/question-gen.queue.js';
 
 // Drafts are reviewed by an authenticated interviewer, so this select includes
 // the private `_guide` rubric columns. It must never be reused on a
@@ -312,6 +314,11 @@ ${input.domain ? `Domain context: ${input.domain} — bake domain-specific traps
 ${input.concern ? `Specifically probe: ${input.concern}` : ''}
 ${avoid.length ? `\nDo NOT duplicate or paraphrase any of these existing questions:\n${avoid.map((t) => `- ${t}`).join('\n')}` : ''}
 
+Keep the question tight: any scenario setup is AT MOST 3 sentences and the whole
+"text" field reads in well under 600 characters. Detail belongs in the rubric,
+not in the question — a candidate facing a wall of text spends their time
+parsing it instead of thinking.
+
 Each question must be answerable in a few paragraphs of prose — no coding exercises.
 
 Return exactly:
@@ -364,41 +371,125 @@ ${JSON_SHAPE}`;
  * Findings are loaded owner-scoped, so one manager cannot generate questions
  * from another's codebase.
  */
-export async function generateFromFindings(
+/**
+ * Repo-grounded questions belonging to this manager, split by review state.
+ *
+ * This is what closes the loop after approval: the scan page can say how many
+ * questions a repository has produced and where they went, and the review list
+ * reads its contents from here rather than from anything held in the browser.
+ * Optionally narrowed to one scan, so a scan page shows only its own output.
+ */
+export async function listGroundedQuestions(
+  interviewerId: string,
+  scanId?: string,
+): Promise<GroundedQuestionsResponse> {
+  const where: Prisma.QuestionWhereInput = {
+    source: 'repo_grounded',
+    is_active: true,
+    created_by: interviewerId,
+    ...(scanId ? { repo_finding: { scan_id: scanId } } : {}),
+  };
+
+  const [draftRows, vettedRows] = await Promise.all([
+    prisma.question.findMany({
+      where: { ...where, status: 'draft' },
+      select: DRAFT_SELECT,
+      orderBy: { created_at: 'desc' },
+    }),
+    prisma.question.findMany({
+      where: { ...where, status: 'vetted' },
+      select: DRAFT_SELECT,
+      orderBy: { created_at: 'desc' },
+    }),
+  ]);
+
+  const drafts = draftRows.map(toDraft);
+  const vetted = vettedRows.map(toDraft);
+  return {
+    drafts,
+    // The vetted list is only used to link somewhere, so the public shape is
+    // enough — no need to ship private rubric guides for a link.
+    vetted: vetted as unknown as GroundedQuestionsResponse['vetted'],
+    counts: { draft: drafts.length, vetted: vetted.length },
+  };
+}
+
+/**
+ * Enqueue generation for the chosen findings and return immediately.
+ *
+ * Generation is a Claude call per finding and takes tens of seconds; running it
+ * inline meant the manager watched a spinner and could not navigate away. Each
+ * finding becomes a job, and the draft each job writes is itself the result —
+ * the review list reads drafts, so there is no separate notification to build.
+ *
+ * Findings are loaded owner-scoped, so one manager cannot generate questions
+ * from another's codebase.
+ */
+export async function queueGenerationFromFindings(
   input: GenerateFromRepoRequest,
   interviewerId: string,
 ): Promise<GenerateFromRepoResponse> {
   const ids = [...new Set(input.finding_ids)].slice(0, 20);
-  if (!ids.length) {
-    throw new AppError(400, 'VALIDATION', 'Select at least one finding');
-  }
+  if (!ids.length) throw new AppError(400, 'VALIDATION', 'Select at least one finding');
 
   const findings = await prisma.repoFinding.findMany({
     where: { id: { in: ids }, scan: { repo_ref: { integration: { owner_id: interviewerId } } } },
-    include: { scan: { select: { repo_ref: { select: { full_name: true } } } } },
+    select: { id: true },
   });
-  if (!findings.length) {
-    throw new AppError(404, 'FINDING_NOT_FOUND', 'No findings of yours matched');
+  if (!findings.length) throw new AppError(404, 'FINDING_NOT_FOUND', 'No findings of yours matched');
+
+  const countPerFinding = Math.min(3, Math.max(1, input.count_per_finding ?? 1));
+  for (const f of findings) {
+    await questionGenQueue.add('generate', {
+      findingId: f.id,
+      ownerId: interviewerId,
+      seniority: input.seniority,
+      ...(input.type ? { type: input.type } : {}),
+      countPerFinding,
+    });
   }
 
-  const perFinding = Math.min(3, Math.max(1, input.count_per_finding ?? 1));
-  const questions: QuestionDraft[] = [];
-  const skipped: GenerateFromRepoResponse['skipped'] = [];
+  return {
+    queued: findings.length,
+    expected: findings.length * countPerFinding,
+    finding_ids: findings.map((f) => f.id),
+  };
+}
 
-  // Sequential, one finding at a time. Concurrency here would multiply the
-  // Claude rate-limit pressure for a manager who is watching a single panel,
-  // and the failure of one finding must not take down the batch.
-  for (const f of findings) {
-    const citation = f.file_path
-      ? `${f.file_path}${f.line_start ? ` lines ${f.line_start}–${f.line_end ?? f.line_start}` : ''}`
-      : 'no specific file';
+/**
+ * Generate for ONE finding. The unit of work a queue job performs.
+ *
+ * Throws on failure so the queue can retry it; nothing partial is persisted,
+ * so a retry cannot leave duplicates behind for the same attempt.
+ */
+export async function generateForFinding(
+  input: {
+    findingId: string;
+    seniority: Difficulty;
+    type?: QuestionType;
+    countPerFinding: number;
+  },
+  interviewerId: string,
+): Promise<QuestionDraft[]> {
+  const f = await prisma.repoFinding.findFirst({
+    where: {
+      id: input.findingId,
+      scan: { repo_ref: { integration: { owner_id: interviewerId } } },
+    },
+  });
+  if (!f) throw new AppError(404, 'FINDING_NOT_FOUND', 'Finding not found');
 
-    const system = `You write technical interview questions and their scoring rubrics for a
+  const perFinding = input.countPerFinding;
+  const citation = f.file_path
+    ? `${f.file_path}${f.line_start ? ` lines ${f.line_start}\u2013${f.line_end ?? f.line_start}` : ''}`
+    : 'no specific file';
+
+  const system = `You write technical interview questions and their scoring rubrics for a
 senior-engineering assessment platform. Return ONLY a JSON object, no prose, no markdown.
 
 ${RUBRIC_SPEC}`;
 
-    const user = `Write ${perFinding} interview question${perFinding === 1 ? '' : 's'} grounded in a REAL finding
+  const user = `Write ${perFinding} interview question${perFinding === 1 ? '' : 's'} grounded in a REAL finding
 about the hiring team's own codebase.
 
 Finding (${f.kind}): ${f.title}
@@ -426,6 +517,14 @@ Rules that matter here:
 - Put the real tension in senior_signal — the tradeoff or failure mode the
   finding exposes is exactly what separates a senior answer here.
 
+LENGTH — this matters as much as the content:
+- The scenario setup is AT MOST 3 sentences.
+- The whole "text" field must read in well under 600 characters. A candidate
+  facing a wall of text spends their time parsing it instead of thinking.
+- Say only what is needed to make the problem answerable. The depth of the
+  finding belongs in the RUBRIC, not in the question — core_answer_guide and
+  senior_signal_guide are where detail earns its place.
+
 topic: a short technology or concept label for retrieval, e.g. "Idempotency",
 "OAuth", "Postgres". Not the finding's title.
 
@@ -434,28 +533,33 @@ Each question must be answerable in a few paragraphs of prose — no coding exer
 Return exactly:
 ${JSON_SHAPE}`;
 
-    try {
-      const parsed = await callGenerator(system, user);
-      const rows = (parsed.questions ?? [])
-        // The model picks the topic here, unlike topic-driven generation where
-        // the caller's topic is the retrieval key — a finding has no topic of
-        // its own, so a sensible label is the best available.
-        .map((raw) =>
-          validate(
-            { ...raw, topic: raw.topic?.trim() || f.kind },
-            { topic: raw.topic?.trim() || f.kind, seniority: input.seniority },
-          ),
-        )
-        .filter((r): r is NonNullable<typeof r> => r !== null)
-        .slice(0, perFinding);
+  const parsed = await callGenerator(system, user);
+  const rows = (parsed.questions ?? [])
+    // The model picks the topic here, unlike topic-driven generation where the
+    // caller's topic is the retrieval key — a finding has no topic of its own,
+    // so a sensible label is the best available.
+    .map((raw) =>
+      validate(
+        { ...raw, topic: raw.topic?.trim() || f.kind },
+        { topic: raw.topic?.trim() || f.kind, seniority: input.seniority },
+      ),
+    )
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    .slice(0, perFinding);
 
-      if (!rows.length) {
-        skipped.push({ finding_id: f.id, reason: 'no question came back with a complete rubric' });
-        continue;
-      }
+  if (!rows.length) {
+    throw new AppError(
+      502,
+      'GENERATION_FAILED',
+      'No question came back with a complete rubric.',
+    );
+  }
 
-      for (const row of rows) {
-        const created = await prisma.question.create({
+  const created: QuestionDraft[] = [];
+  for (const row of rows) {
+    created.push(
+      toDraft(
+        await prisma.question.create({
           data: {
             ...row,
             status: 'draft',
@@ -465,32 +569,16 @@ ${JSON_SHAPE}`;
             repo_finding_id: f.id,
           },
           select: DRAFT_SELECT,
-        });
-        questions.push(toDraft(created));
-      }
-
-      await prisma.repoFinding.update({
-        where: { id: f.id },
-        data: { used_in_questions: { push: rows.map((_, i) => questions[questions.length - rows.length + i]!.id) } },
-      });
-    } catch (err) {
-      // One finding failing is not the request failing — the manager keeps
-      // whatever the others produced.
-      skipped.push({
-        finding_id: f.id,
-        reason: err instanceof AppError ? err.message : 'generation failed',
-      });
-    }
-  }
-
-  if (!questions.length) {
-    throw new AppError(
-      502,
-      'GENERATION_FAILED',
-      skipped[0]?.reason ?? 'No questions could be generated from those findings.',
+        }),
+      ),
     );
   }
-  return { questions, skipped };
+
+  await prisma.repoFinding.update({
+    where: { id: f.id },
+    data: { used_in_questions: { push: created.map((q) => q.id) } },
+  });
+  return created;
 }
 
 /**

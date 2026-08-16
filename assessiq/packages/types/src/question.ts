@@ -154,10 +154,29 @@ export interface GenerateFromRepoRequest {
   count_per_finding?: number;
 }
 
+/**
+ * 202 — generation was ENQUEUED, not performed. Each finding becomes a job and
+ * each job writes a draft; the drafts are the result, read back through
+ * GET /questions/grounded. Nothing blocks on this.
+ */
 export interface GenerateFromRepoResponse {
-  questions: QuestionDraft[];
-  /** Findings that produced nothing usable, so the UI can say which. */
-  skipped: { finding_id: string; reason: string }[];
+  /** Findings accepted onto the queue. */
+  queued: number;
+  /** Drafts expected once every job finishes (queued x count_per_finding). */
+  expected: number;
+  finding_ids: string[];
+}
+
+/**
+ * GET /questions/grounded — repo-grounded questions for this manager, with the
+ * counts the scan page needs to say where approved questions went.
+ */
+export interface GroundedQuestionsResponse {
+  /** Awaiting review. These are what the "ready for review" list shows. */
+  drafts: QuestionDraft[];
+  /** Approved and usable in an assessment. */
+  vetted: QuestionListItem[];
+  counts: { draft: number; vetted: number };
 }
 
 export interface GenerateQuestionsRequest {

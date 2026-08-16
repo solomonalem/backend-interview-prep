@@ -12,7 +12,9 @@ import {
   approveDraft,
   buildQuestionPool,
   draftRubricForQuestion,
-  generateFromFindings,
+  generateForFinding,
+  listGroundedQuestions,
+  queueGenerationFromFindings,
   generateQuestions,
   getDraftForReview,
   refineDraft,
@@ -160,7 +162,23 @@ questionsRouter.post(
     if (!parsed.success) {
       throw new AppError(400, 'VALIDATION', 'finding_ids and seniority are required');
     }
-    res.status(201).json(await generateFromFindings(parsed.data, req.interviewer!.id));
+    // 202: queued, not done. The drafts arrive via GET /questions/grounded.
+    res.status(202).json(await queueGenerationFromFindings(parsed.data, req.interviewer!.id));
+  }),
+);
+
+const groundedSchema = z.object({ scan_id: z.string().min(1).optional() });
+
+// GET /questions/grounded — repo-grounded questions split into awaiting-review
+// and vetted. Backs both the review list and the "where did it go" counts.
+// Before '/:id', like the other named routes.
+questionsRouter.get(
+  '/grounded',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = groundedSchema.safeParse(req.query);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid query parameters');
+    res.json(await listGroundedQuestions(req.interviewer!.id, parsed.data.scan_id));
   }),
 );
 

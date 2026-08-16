@@ -13,9 +13,12 @@ import {
   Wand2,
   CheckSquare,
   Square,
+  ClipboardList,
+  CheckCircle2,
 } from 'lucide-react';
 import type {
   Difficulty,
+  GroundedQuestionsResponse,
   FindingKind,
   FindingView,
   QuestionDraft,
@@ -117,6 +120,22 @@ export default function ScanPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // ── Grounded generation (design §6) ────────────────────────────────────────
+  // Nothing is pre-selected: which findings matter depends on the role being
+  // hired for, and that is the manager's judgement, not ours.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [seniority, setSeniority] = useState<Difficulty>('senior');
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState<QuestionDraft | null>(null);
+  // Questions this repo has produced, read from the server rather than held in
+  // the browser — so leaving the page and coming back loses nothing.
+  const [grounded, setGrounded] = useState<GroundedQuestionsResponse | null>(null);
+  // How many drafts we are still expecting from jobs we just enqueued. Purely
+  // a progress hint; the list itself is always the source of truth.
+  const [awaiting, setAwaiting] = useState(0);
+  const [justApproved, setJustApproved] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     if (!id) return;
     try {
@@ -133,20 +152,26 @@ export default function ScanPage() {
     }
   }, [id]);
 
+  const loadGrounded = useCallback(async () => {
+    if (!id) return;
+    try {
+      const g = await questionsApi.grounded(id);
+      setGrounded(g);
+      // Stop the progress hint once the drafts we were waiting on have landed.
+      setAwaiting((n) => (n > 0 && g.drafts.length >= n ? 0 : n));
+    } catch {
+      /* the list is a read-through; a transient failure just retries next tick */
+    }
+  }, [id]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadGrounded();
+  }, [load, loadGrounded]);
 
-  // ── Grounded generation (design §6) ────────────────────────────────────────
-  // Nothing is pre-selected: which findings matter depends on the role being
-  // hired for, and that is the manager's judgement, not ours.
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [seniority, setSeniority] = useState<Difficulty>('senior');
-  const [generating, setGenerating] = useState(false);
-  const [genError, setGenError] = useState<string | null>(null);
-  const [queue, setQueue] = useState<QuestionDraft[]>([]);
-  const [reviewing, setReviewing] = useState<QuestionDraft | null>(null);
-  const [approved, setApproved] = useState(0);
+  // Poll while jobs are outstanding. Generation is a Claude call per finding,
+  // so drafts trickle in over tens of seconds.
+  useLiveRefresh(loadGrounded, { intervalMs: 4_000, enabled: awaiting > 0 });
 
   const toggle = (id: string) =>
     setPicked((prev) => {
@@ -165,16 +190,12 @@ export default function ScanPage() {
         finding_ids: [...picked],
         seniority,
       });
-      // Drafts queue up and are reviewed one at a time — the review gate is
-      // unchanged, so nothing here can reach a candidate unapproved.
-      setQueue(r.questions);
-      setReviewing(r.questions[0] ?? null);
+      // Returns as soon as the jobs are queued. Each finishes by writing a
+      // draft, which shows up in the list below — nothing blocks, and leaving
+      // the page costs nothing.
+      setAwaiting((grounded?.drafts.length ?? 0) + r.expected);
       setPicked(new Set());
-      if (r.skipped.length) {
-        setGenError(
-          `${r.skipped.length} finding${r.skipped.length === 1 ? '' : 's'} produced nothing usable — ${r.skipped[0]!.reason}`,
-        );
-      }
+      void loadGrounded();
     } catch (e) {
       setGenError(e instanceof ApiRequestError ? e.message : 'Could not generate questions.');
     } finally {
@@ -182,11 +203,12 @@ export default function ScanPage() {
     }
   };
 
-  // Advance through the queue as each draft is dealt with.
-  const nextDraft = (id: string) => {
-    const rest = queue.filter((q) => q.id !== id);
-    setQueue(rest);
-    setReviewing(rest[0] ?? null);
+  // Reviewing returns to the LIST, never to another modal. Which question to
+  // deal with next is the manager's choice, not a sequence we impose.
+  const afterReview = (approvedTitle?: string) => {
+    setReviewing(null);
+    setJustApproved(approvedTitle ?? null);
+    void loadGrounded();
   };
 
   const running = !!data && RUNNING.includes(data.scan.status);
@@ -223,11 +245,8 @@ export default function ScanPage() {
       {reviewing && (
         <QuestionReviewPanel
           draft={reviewing}
-          onApproved={(q) => {
-            setApproved((n) => n + 1);
-            nextDraft(q.id);
-          }}
-          onRejected={(qid) => nextDraft(qid)}
+          onApproved={(q) => afterReview(q.topic)}
+          onRejected={() => afterReview()}
           onClose={() => setReviewing(null)}
         />
       )}
@@ -383,7 +402,7 @@ export default function ScanPage() {
                     <Wand2 size={16} />
                   )}
                   {generating
-                    ? 'Writing questions…'
+                    ? 'Queueing…'
                     : `Generate from ${picked.size || 'selected'} finding${picked.size === 1 ? '' : 's'}`}
                 </Button>
                 {picked.size > 0 && !generating && (
@@ -395,15 +414,13 @@ export default function ScanPage() {
                     Clear
                   </button>
                 )}
-                {approved > 0 && (
-                  <span className="text-xs font-medium text-emerald-600">
-                    {approved} approved into your bank
-                  </span>
-                )}
+
               </div>
-              {generating && (
-                <p className="text-xs text-slate-500">
-                  Each finding is written up separately, so this takes a few seconds per finding.
+              {awaiting > 0 && (
+                <p className="flex items-center gap-2 text-xs text-brand-700">
+                  <Loader2 size={13} className="animate-spin" />
+                  Writing questions in the background — they appear below as they finish. You can
+                  keep browsing findings or leave this page.
                 </p>
               )}
               {genError && (
@@ -411,20 +428,114 @@ export default function ScanPage() {
                   {genError}
                 </p>
               )}
-              {queue.length > 0 && !reviewing && (
-                <p className="text-xs text-slate-500">
-                  {queue.length} draft{queue.length === 1 ? '' : 's'} still waiting for review.{' '}
-                  <button
-                    type="button"
-                    onClick={() => setReviewing(queue[0] ?? null)}
-                    className="font-medium text-brand-600 hover:text-brand-700"
-                  >
-                    Resume review
-                  </button>
-                </p>
-              )}
             </CardBody>
           </Card>
+
+
+          {/* Where the questions from this repo went (problem A: approving used
+              to end in a dead end — "added to your bank" with no way to reach
+              it). Drafts are reviewable in any order; vetted ones link to the
+              builder, which is where they become an assessment. */}
+          {(grounded && (grounded.counts.draft > 0 || grounded.counts.vetted > 0)) || awaiting > 0 ? (
+            <Card className="ring-1 ring-brand-200">
+              <CardHeader>
+                <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                  <ClipboardList size={16} className="text-brand-500" /> Questions from this repo
+                </h3>
+                <div className="flex items-center gap-1.5">
+                  <Badge tone={grounded?.counts.vetted ? 'emerald' : 'slate'}>
+                    {grounded?.counts.vetted ?? 0} vetted
+                  </Badge>
+                  <Badge tone={grounded?.counts.draft ? 'amber' : 'slate'}>
+                    {grounded?.counts.draft ?? 0} awaiting review
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardBody className="space-y-4">
+                {justApproved && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                    <CheckCircle2 size={15} className="shrink-0" />
+                    <span>
+                      <span className="font-medium">Added to your bank</span> — vetted and ready to
+                      use in an assessment.
+                    </span>
+                    <Link
+                      to="/build"
+                      className="font-medium text-emerald-700 underline underline-offset-2 hover:text-emerald-900"
+                    >
+                      Use in an assessment
+                    </Link>
+                    <Link
+                      to="/bank"
+                      className="font-medium text-emerald-700 underline underline-offset-2 hover:text-emerald-900"
+                    >
+                      View in the bank
+                    </Link>
+                  </div>
+                )}
+
+                {/* Awaiting review — click any one, in any order. */}
+                {grounded && grounded.drafts.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                      Ready for review
+                    </p>
+                    {grounded.drafts.map((q) => (
+                      <button
+                        key={q.id}
+                        type="button"
+                        onClick={() => setReviewing(q)}
+                        className="flex w-full items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50/50 px-4 py-3 text-left transition hover:border-amber-300 hover:bg-amber-50"
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm text-slate-800 line-clamp-2">{q.text}</span>
+                          <span className="mt-1 block text-[11px] text-slate-400">
+                            {q.topic} · {q.difficulty}
+                            {q.grounding ? ` · from "${q.grounding.finding_title}"` : ''}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-xs font-medium text-amber-700">Review →</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {awaiting > 0 && (
+                  <p className="flex items-center gap-2 text-xs text-slate-500">
+                    <Loader2 size={13} className="animate-spin text-brand-500" />
+                    More on the way…
+                  </p>
+                )}
+
+                {/* Vetted — the destination. */}
+                {grounded && grounded.vetted.length > 0 && (
+                  <div className="space-y-2 border-t border-slate-100 pt-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                      In your bank, ready to use
+                    </p>
+                    {grounded.vetted.map((q) => (
+                      <div
+                        key={q.id}
+                        className="rounded-lg border border-slate-100 bg-slate-50/60 px-4 py-3"
+                      >
+                        <p className="text-sm text-slate-700 line-clamp-2">{q.text}</p>
+                        <p className="mt-1 text-[11px] text-slate-400">
+                          {q.topic} · {q.difficulty}
+                        </p>
+                      </div>
+                    ))}
+                    <p className="pt-1 text-xs text-slate-500">
+                      Find these under{' '}
+                      <Link to="/build" className="font-medium text-brand-600 hover:text-brand-700">
+                        New Assessment → “Or use a question from your codebase”
+                      </Link>
+                      , then add them to the tray like any other vetted question.
+                    </p>
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+          ) : null}
 
           {FINDING_KINDS.filter((k) => findings.some((f) => f.kind === k)).map((kind) => {
             const meta = KIND_META[kind];
