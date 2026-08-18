@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
+import { rateLimit } from '../middleware/rate-limit.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import {
   getQuestionById,
@@ -112,6 +113,7 @@ const generateSchema = z.object({
 questionsRouter.post(
   '/generate',
   authInterviewer,
+  rateLimit({ bucket: 'generate', limit: 40, windowSeconds: 3600 }),
   asyncHandler(async (req, res) => {
     const parsed = generateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -157,6 +159,8 @@ const fromRepoSchema = z.object({
 questionsRouter.post(
   '/generate-from-repo',
   authInterviewer,
+  // Each request fans out to one Claude call per finding, up to 20 findings.
+  rateLimit({ bucket: 'generate-repo', limit: 20, windowSeconds: 3600 }),
   asyncHandler(async (req, res) => {
     const parsed = fromRepoSchema.safeParse(req.body);
     if (!parsed.success) {
