@@ -42,6 +42,11 @@ export interface AnalysisResult {
   filesAnalyzed: number;
   /** True when some batches failed — findings are real but incomplete (§5). */
   partial: boolean;
+  /**
+   * Why batches failed, when any did. Carried so a scan that produced nothing
+   * can say what actually went wrong instead of reporting an empty success.
+   */
+  failureReason?: string;
 }
 
 // ── Strict mode (§2.5) ───────────────────────────────────────────────────────
@@ -138,6 +143,30 @@ async function call<T>(
     }
   }
   throw new Error(`${label} failed`);
+}
+
+/**
+ * Turn a provider failure into a sentence a manager can act on.
+ *
+ * The raw message is a JSON blob from the API, and putting it in `RepoScan.error`
+ * both reads badly and risks carrying whatever else the provider chose to echo
+ * back. Classify the cases that have a real remedy and summarise the rest.
+ */
+function classify(err: unknown): string {
+  const e = err as { status?: number; message?: string };
+  const msg = e?.message ?? '';
+  if (/credit balance is too low|insufficient.*credit|billing/i.test(msg)) {
+    return 'the Anthropic account has no remaining credit — top it up and re-scan';
+  }
+  if (e?.status === 401 || /invalid x-api-key|authentication/i.test(msg)) {
+    return 'the Anthropic API key was rejected';
+  }
+  if (e?.status === 429 || /rate.?limit/i.test(msg)) {
+    return 'the Anthropic API rate limit was reached — try again shortly';
+  }
+  if (/truncated at max_tokens/i.test(msg)) return 'a response exceeded the token budget';
+  if (/timed out|timeout/i.test(msg)) return 'the analysis request timed out';
+  return 'the analyser did not return a usable response';
 }
 
 // ── Pass 1: per-batch observations ───────────────────────────────────────────
@@ -252,6 +281,8 @@ export async function analyzeRepo(opts: {
   let tokensUsed = 0;
   let filesAnalyzed = 0;
   let failedBatches = 0;
+  let batchesRun = 0;
+  let lastFailure: string | undefined;
 
   for (const [i, group] of groups.entries()) {
     const parts: string[] = [];
@@ -267,6 +298,7 @@ export async function analyzeRepo(opts: {
       }
     }
     if (!parts.length) continue;
+    batchesRun++;
 
     try {
       const { data, tokens } = await call<{ observations?: RawObservation[] }>(
@@ -282,17 +314,29 @@ export async function analyzeRepo(opts: {
       for (const o of data.observations ?? []) {
         if (o?.file_path && o?.observation) observations.push(o);
       }
-    } catch {
+    } catch (err) {
       // Design §5: keep what completed, label the scan partial. A batch that
-      // fails costs coverage, not the whole scan.
+      // fails costs coverage, not the whole scan — unless they ALL fail, which
+      // the caller turns into an outright failure rather than an empty success.
       failedBatches++;
+      lastFailure = classify(err);
     }
     opts.onProgress?.(i + 1, groups.length);
   }
 
   if (!observations.length) {
-    // Nothing to synthesise from. Not an error if the repo is genuinely thin.
-    return { findings: [], tokensUsed, filesAnalyzed, partial: failedBatches > 0 };
+    // Nothing to synthesise from. Genuinely thin repositories land here too, so
+    // the distinction that matters is whether anything actually ran: every
+    // batch failing is a failure, not an empty result.
+    return {
+      findings: [],
+      tokensUsed,
+      filesAnalyzed,
+      partial: failedBatches > 0,
+      ...(failedBatches > 0 && failedBatches === batchesRun
+        ? { failureReason: lastFailure ?? 'every analysis batch failed' }
+        : {}),
+    };
   }
 
   const synthUser = [
@@ -347,5 +391,11 @@ export async function analyzeRepo(opts: {
     });
   }
 
-  return { findings, tokensUsed, filesAnalyzed, partial: failedBatches > 0 };
+  return {
+    findings,
+    tokensUsed,
+    filesAnalyzed,
+    partial: failedBatches > 0,
+    ...(failedBatches > 0 ? { failureReason: lastFailure } : {}),
+  };
 }
