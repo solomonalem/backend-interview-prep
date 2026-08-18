@@ -28,6 +28,10 @@ export const integrationsApi = {
 
   disconnect: () => api.del('/integrations/github'),
 
+  // Structure-only analysis. Applies to the next scan, not past findings.
+  setStrictMode: (strict: boolean) =>
+    api.patch<IntegrationView>('/integrations/github/strict-mode', { strict_mode: strict }),
+
   // ── Scanning (Slice 2) ─────────────────────────────────────────────────────
   // 202: the scan is queued, not finished. Poll the returned scan.
   scan: (repoRefId: string) =>
