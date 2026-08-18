@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { logErr } from '../lib/safe-log.js';
 
 // Typed application error. Carries the HTTP status and the machine `code`
 // that the API contract (docs/08) promises alongside the message.
@@ -40,6 +41,8 @@ export function errorHandler(
     res.status(err.statusCode).json({ error: err.message, code: err.code, ...(err.details ?? {}) });
     return;
   }
-  console.error('[unhandled error]', err);
+  // Never print the raw error: a Prisma failure carries the row it could not
+  // write, and a finding row carries an excerpt of the customer's source.
+  logErr('api', 'unhandled', err);
   res.status(500).json({ error: 'Internal server error', code: 'INTERNAL' });
 }
