@@ -53,21 +53,64 @@ export interface AnalysisResult {
 // Structure only: imports, declarations, routes, schema shapes. Lower question
 // specificity, higher privacy. Deliberately regex-based rather than a parser
 // per language — the analyser is language-agnostic and so is this.
+/**
+ * Lines that describe SHAPE rather than logic.
+ *
+ * The first version anchored on `import` / `class` / `function` at line start,
+ * which is how TypeScript services look and not how much else does. Measured
+ * against a plain script-style JS repo it kept 371 bytes out of 24,945 — 1.5%
+ * of the source, with 2 of 7 files yielding nothing — and the synthesis model
+ * replied "I need more information" rather than findings. Structure has to
+ * include the forms other ecosystems declare things in.
+ */
 const STRUCTURAL = [
-  /^\s*(import|from|require|use|include|using|package)\b.*/,
-  /^\s*(export\s+)?(async\s+)?(function|class|interface|type|enum|struct|trait|impl)\s+[\w<>]+.*/,
-  /^\s*(public|private|protected|static|func|def|fn|sub)\s+[\w<>]+.*/,
-  /^\s*(model|table|CREATE TABLE|ALTER TABLE|CREATE INDEX)\b.*/i,
-  /^\s*(app|router|r|route)\.(get|post|put|patch|delete|use)\s*\(.*/,
-  /^\s*@\w+.*/, // decorators — often the whole story in Nest/Spring/Django
+  // Module wiring
+  /^\s*(import|export|from|require|use|include|using|package|module\.exports)\b/,
+  // Declarations, however they are spelled
+  /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|interface|type|enum|struct|trait|impl)\s+[\w<>$]+/,
+  /^\s*(public|private|protected|static|final|func|def|fn|sub|val|var)\s+[\w<>$]+/,
+  // `const x = () =>`, `let x = function` — the dominant shape in modern JS,
+  // and invisible to the patterns above.
+  /^\s*(export\s+)?(const|let|var)\s+[\w$]+\s*=\s*(async\s*)?(\(|function|\w+\s*=>)/,
+  // Object/class methods: `name(args) {`
+  /^\s*[\w$]+\s*\([^)]*\)\s*\{\s*$/,
+  // Top-level constants (value truncated below, so mainly the name survives)
+  /^\s*(export\s+)?(const|let|var)\s+[A-Z_][\w$]*\s*=/,
+  // Data model / schema
+  /^\s*(model|table|schema|CREATE TABLE|ALTER TABLE|CREATE INDEX)\b/i,
+  // Routes and handlers — how the system is reached
+  /^\s*(app|router|r|route|server)\.(get|post|put|patch|delete|use|listen)\s*\(/,
+  /^\s*@\w+/, // decorators
+  // External integrations: an endpoint is architecture, not logic.
+  /(fetch|axios|XMLHttpRequest|\$\.(get|post|ajax))\s*\(/,
+  /https?:\/\/[^\s'"`]+/,
+  // Event wiring
+  /addEventListener\s*\(\s*['"`]/,
 ];
 
-function structuralSummary(text: string): string {
+/** Kept lines are capped so a declaration cannot smuggle its body along. */
+const STRUCT_LINE_CHARS = 140;
+const STRUCT_MAX_LINES = 80;
+
+// Exported so the extraction can be measured directly rather than through a
+// duplicated copy of the patterns, which is how the first measurement went stale.
+export function structuralSummary(text: string): string {
   const kept: string[] = [];
+  const names = new Set<string>();
   for (const line of text.split('\n')) {
-    if (line.length > 200) continue;
-    if (STRUCTURAL.some((re) => re.test(line))) kept.push(line.trim());
-    if (kept.length >= 60) break;
+    if (line.length > 400) continue; // minified or generated
+    if (STRUCTURAL.some((re) => re.test(line))) {
+      const t = line.trim();
+      kept.push(t.length > STRUCT_LINE_CHARS ? `${t.slice(0, STRUCT_LINE_CHARS)}…` : t);
+      if (kept.length >= STRUCT_MAX_LINES) break;
+    }
+    // Collect declared identifiers regardless, so a file whose lines all fail
+    // the patterns still contributes its vocabulary rather than nothing.
+    const m = line.match(/(?:function|class|const|let|var|def|func)\s+([A-Za-z_$][\w$]*)/);
+    if (m?.[1]) names.add(m[1]);
+  }
+  if (kept.length < 3 && names.size) {
+    kept.push(`/* declares: ${[...names].slice(0, 40).join(', ')} */`);
   }
   return kept.join('\n');
 }
@@ -96,6 +139,40 @@ interface Called<T> {
   tokens: number;
 }
 
+/** The model answered, but not with an object. Distinct from a transport
+ *  failure because the remedy is different: ask again, differently. */
+class NotJson extends Error {}
+
+/**
+ * The first balanced `{...}` in a reply, or null.
+ *
+ * Tolerates the two things models actually do around JSON — wrapping it in a
+ * code fence and prefacing it with a sentence — without tolerating a reply
+ * that is only prose. Brace counting is string-aware so a `{` inside a value
+ * (a path, a regex in a snippet) cannot unbalance it.
+ */
+function firstJsonObject(raw: string): string | null {
+  const start = raw.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return raw.slice(start, i + 1);
+  }
+  return null; // unterminated — truncation, not prose
+}
+
 /** One retry, transient failures only. Truncation is named rather than left to
  *  surface as unterminated JSON several frames later. */
 async function call<T>(
@@ -112,6 +189,14 @@ async function call<T>(
       'Repository analysis is not configured on this server (no ANTHROPIC_API_KEY).',
     );
   }
+  // Asking for "ONLY JSON" is a request the model can decline — on thin input
+  // (strict mode, where it sees signatures rather than code) it answered
+  // "I need more information" and the parse blew up. Prefilling the reply with
+  // an opening brace would make prose structurally unavailable, but the
+  // synthesis model rejects assistant prefill outright, so instead: pull the
+  // first balanced object out of whatever came back, and if there isn't one,
+  // say so plainly and ask again.
+  let prompt = user;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const res = await anthropic.messages.create({
@@ -119,19 +204,30 @@ async function call<T>(
         max_tokens: maxTokens,
         temperature: 0,
         system,
-        messages: [{ role: 'user', content: user }],
+        messages: [{ role: 'user', content: prompt }],
       });
       if (res.stop_reason === 'max_tokens') {
         throw new Error(`${label} truncated at max_tokens (${maxTokens})`);
       }
       const block = res.content[0];
       if (!block || block.type !== 'text') throw new Error('unexpected response type');
-      const text = block.text.replace(/```json|```/g, '').trim();
+      const text = firstJsonObject(block.text);
+      if (!text) throw new NotJson(`${label} returned prose instead of JSON`);
       return {
         data: JSON.parse(text) as T,
         tokens: (res.usage?.input_tokens ?? 0) + (res.usage?.output_tokens ?? 0),
       };
     } catch (err) {
+      if (attempt === 1 && (err instanceof NotJson || err instanceof SyntaxError)) {
+        // Restate the contract rather than the input: a second identical call
+        // at temperature 0 would return the identical refusal.
+        prompt =
+          `${user}\n\nReturn a single JSON object and nothing else — no prose, no ` +
+          `explanation, no code fences. If the material is too thin to judge, ` +
+          `return the object with empty arrays rather than asking for more.`;
+        console.error(`[scan:${label}] attempt 1/2 was not JSON, restating the format`);
+        continue;
+      }
       const retrying = attempt === 1 && isTransient(err);
       // Message only — an error carrying a response body could echo source.
       console.error(
