@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
+import { rateLimit } from '../middleware/rate-limit.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import {
   getQuestionById,
@@ -12,6 +13,9 @@ import {
   approveDraft,
   buildQuestionPool,
   draftRubricForQuestion,
+  generateForFinding,
+  listGroundedQuestions,
+  queueGenerationFromFindings,
   generateQuestions,
   getDraftForReview,
   refineDraft,
@@ -22,6 +26,7 @@ export const questionsRouter = Router();
 
 const filterSchema = z.object({
   topic: z.string().optional(),
+  source: z.enum(['manual', 'generated', 'repo_grounded']).optional(),
   difficulty: z.enum(['junior', 'mid', 'senior', 'staff']).optional(),
   type: z.enum(['conceptual', 'scenario', 'rca', 'design', 'behavioral']).optional(),
   domain: z.string().optional(),
@@ -108,6 +113,7 @@ const generateSchema = z.object({
 questionsRouter.post(
   '/generate',
   authInterviewer,
+  rateLimit({ bucket: 'generate', limit: 40, windowSeconds: 3600 }),
   asyncHandler(async (req, res) => {
     const parsed = generateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -137,6 +143,46 @@ questionsRouter.post(
       throw new AppError(400, 'VALIDATION', 'technology and seniority are required');
     }
     res.json(await buildQuestionPool(parsed.data, req.interviewer!.id));
+  }),
+);
+
+const fromRepoSchema = z.object({
+  finding_ids: z.array(z.string().min(1)).min(1).max(20),
+  seniority: difficultyEnum,
+  type: typeEnum.optional(),
+  count_per_finding: z.number().int().min(1).max(3).optional(),
+});
+
+// POST /questions/generate-from-repo — questions grounded in the manager's own
+// codebase. Output is ordinary drafts: the review gate is unchanged, because
+// grounding changes what a question is about, not how it earns approval.
+questionsRouter.post(
+  '/generate-from-repo',
+  authInterviewer,
+  // Each request fans out to one Claude call per finding, up to 20 findings.
+  rateLimit({ bucket: 'generate-repo', limit: 20, windowSeconds: 3600 }),
+  asyncHandler(async (req, res) => {
+    const parsed = fromRepoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION', 'finding_ids and seniority are required');
+    }
+    // 202: queued, not done. The drafts arrive via GET /questions/grounded.
+    res.status(202).json(await queueGenerationFromFindings(parsed.data, req.interviewer!.id));
+  }),
+);
+
+const groundedSchema = z.object({ scan_id: z.string().min(1).optional() });
+
+// GET /questions/grounded — repo-grounded questions split into awaiting-review
+// and vetted. Backs both the review list and the "where did it go" counts.
+// Before '/:id', like the other named routes.
+questionsRouter.get(
+  '/grounded',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = groundedSchema.safeParse(req.query);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid query parameters');
+    res.json(await listGroundedQuestions(req.interviewer!.id, parsed.data.scan_id));
   }),
 );
 

@@ -25,6 +25,9 @@ const PUBLIC_SELECT = {
   type: true,
   domain: true,
   status: true,
+  // Provenance. Safe on this select: it says a question came from a repo, not
+  // which repo — the citation itself lives on the interviewer-only draft shape.
+  source: true,
   core_answer_display: true,
   senior_signal_display: true,
   trap_display: true,
@@ -33,6 +36,7 @@ const PUBLIC_SELECT = {
 function buildWhere(f: QuestionFilters): Prisma.QuestionWhereInput {
   const where: Prisma.QuestionWhereInput = { is_active: true };
   if (f.topic) where.topic = f.topic;
+  if (f.source) where.source = f.source as Prisma.QuestionWhereInput['source'];
   if (f.difficulty) where.difficulty = f.difficulty as Difficulty;
   if (f.type) where.type = f.type as QuestionType;
   if (f.domain) where.domain = f.domain;

@@ -10,6 +10,7 @@ import {
   Sparkles,
   LogOut,
   Briefcase,
+  Plug,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
@@ -26,6 +27,7 @@ const interviewerNav: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
   { to: '/bank', label: 'Question Bank', icon: <Library size={18} /> },
   { to: '/build', label: 'New Assessment', icon: <FilePlus2 size={18} /> },
+  { to: '/settings/integrations', label: 'Integrations', icon: <Plug size={18} /> },
 ];
 
 const studyNav: NavItem[] = [
