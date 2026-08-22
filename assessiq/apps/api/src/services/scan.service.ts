@@ -5,6 +5,8 @@ import { fetchSnapshot, wipe } from '../lib/repo-snapshot.js';
 import { detectStack, inventory, MAX_SELECTED_FILES } from '../lib/repo-inventory.js';
 import { analyzeRepo } from './analysis.service.js';
 import { repoScanQueue } from '../queues/repo-scan.queue.js';
+import { logErr } from '../lib/safe-log.js';
+import { isRevocationError, markInstallationRevoked } from './integration.service.js';
 
 // Orchestrates the pipeline (design §5) and owns everything the API reads back.
 // The pipeline itself runs in the worker; nothing here blocks a request on it.
@@ -148,6 +150,17 @@ export async function runScan(scanId: string): Promise<void> {
   let dir: string | null = null;
 
   try {
+    // A scan can sit in the queue behind others, and the manager may have
+    // disconnected in the meantime. Check at the moment of running, not only
+    // at enqueue time.
+    if (repo.integration.status !== 'active') {
+      throw new AppError(
+        409,
+        'INTEGRATION_REVOKED',
+        'This GitHub connection was disconnected before the scan started.',
+      );
+    }
+
     await prisma.repoScan.update({
       where: { id: scanId },
       data: { status: 'cloning', started_at: new Date(), error: null },
@@ -160,6 +173,21 @@ export async function runScan(scanId: string): Promise<void> {
     );
     dir = snap.dir;
 
+    // Fetching a snapshot takes seconds and analysis takes minutes, so the
+    // connection can be revoked part-way through. Re-read it before spending
+    // tokens on a repository we may no longer be entitled to.
+    const stillActive = await prisma.repoIntegration.findUnique({
+      where: { id: repo.integration.id },
+      select: { status: true },
+    });
+    if (stillActive?.status !== 'active') {
+      throw new AppError(
+        409,
+        'INTEGRATION_REVOKED',
+        'The GitHub connection was revoked while this scan was running.',
+      );
+    }
+
     const inv = await inventory(dir, MAX_SELECTED_FILES);
     const stack = await detectStack(dir, inv.manifestPaths);
 
@@ -171,6 +199,13 @@ export async function runScan(scanId: string): Promise<void> {
       stack,
       strictMode: repo.integration.strict_mode,
     });
+
+    // Every batch failing is not a scan that found nothing — it is a scan that
+    // never ran. Reporting "done" there told the manager the repository was
+    // uninteresting when the real answer was an exhausted API budget.
+    if (!result.findings.length && result.failureReason) {
+      throw new AppError(502, 'ANALYSIS_FAILED', `Analysis failed: ${result.failureReason}`);
+    }
 
     const stats: ScanStats = {
       files_seen: inv.filesSeen,
@@ -199,7 +234,15 @@ export async function runScan(scanId: string): Promise<void> {
       }),
     ]);
   } catch (err) {
-    const message = err instanceof AppError ? err.message : (err as Error).message;
+    // GitHub refusing the installation IS the revocation notice, and arrives
+    // before any webhook on a self-hosted deployment that has none. Record it
+    // so the integrations screen stops claiming to be connected.
+    let message = err instanceof AppError ? err.message : (err as Error).message;
+    if (isRevocationError(err)) {
+      await markInstallationRevoked(repo.integration.installation_id).catch(() => {});
+      message =
+        'GitHub no longer accepts this installation — it looks revoked or uninstalled. Reconnect to scan again.';
+    }
     await prisma.repoScan.update({
       where: { id: scanId },
       data: {
@@ -209,7 +252,7 @@ export async function runScan(scanId: string): Promise<void> {
         error: message.slice(0, 500),
       },
     });
-    console.error(`[scan] ${scanId} failed: ${message}`);
+    logErr('scan', scanId, err);
   } finally {
     await wipe(dir);
   }

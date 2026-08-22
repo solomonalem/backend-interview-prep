@@ -10,6 +10,8 @@ import {
 import { scoringWorker } from './scoring.worker.js';
 import { repoScanWorker } from './repo-scan.worker.js';
 import { questionGenWorker } from './question-gen.worker.js';
+import { logErr } from '../lib/safe-log.js';
+import { sweepOrphanedWorkspaces } from '../lib/repo-snapshot.js';
 
 console.log(
   `[assessiq-worker] scoring worker started — model: ${anthropic ? SCORING_MODEL : 'stub-dev (no ANTHROPIC_API_KEY)'}`,
@@ -27,7 +29,7 @@ scoringWorker.on('completed', (job) => {
   console.log(`[scoring] job ${job.id} completed (answer ${job.data.answerId})`);
 });
 scoringWorker.on('failed', (job, err) => {
-  console.error(`[scoring] job ${job?.id} failed:`, err.message);
+  logErr('scoring', `job ${job?.id}`, err);
 });
 
 repoScanWorker.on('completed', (job) => {
@@ -35,15 +37,18 @@ repoScanWorker.on('completed', (job) => {
 });
 repoScanWorker.on('failed', (job, err) => {
   // runScan already recorded the failure on the scan row; this is operator noise.
-  console.error(`[repo-scan] job ${job?.id} failed:`, err.message);
+  logErr('repo-scan', `job ${job?.id}`, err);
 });
 
 questionGenWorker.on('completed', (job) => {
   console.log(`[question-gen] job ${job.id} completed (finding ${job.data.findingId})`);
 });
 questionGenWorker.on('failed', (job, err) => {
-  console.error(`[question-gen] job ${job?.id} failed:`, err.message);
+  logErr('question-gen', `job ${job?.id}`, err);
 });
+
+// A crash can leave a checkout behind that the finally block never reached.
+void sweepOrphanedWorkspaces();
 
 async function shutdown() {
   await Promise.all([scoringWorker.close(), repoScanWorker.close(), questionGenWorker.close()]);

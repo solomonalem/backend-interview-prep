@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 // GitHub App client — the ONLY place that talks to api.github.com.
@@ -26,6 +27,29 @@ const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET ?? '';
 // PEM keys are multi-line. .env carries them with literal \n, so unescape.
 const PRIVATE_KEY = (process.env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n');
 
+const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET ?? '';
+
+export function isWebhookConfigured(): boolean {
+  return Boolean(GITHUB_WEBHOOK_SECRET);
+}
+
+/**
+ * Verify GitHub's `X-Hub-Signature-256` over the RAW body.
+ *
+ * The comparison is constant-time: a webhook signature check that short-
+ * circuits on the first differing byte leaks the expected digest to anyone
+ * willing to time it. Returns false rather than throwing, because every
+ * failure here is "not from GitHub" and deserves the same answer.
+ */
+export function verifyWebhookSignature(rawBody: Buffer, signature: string | undefined): boolean {
+  if (!GITHUB_WEBHOOK_SECRET || !signature) return false;
+  const expected = `sha256=${createHmac('sha256', GITHUB_WEBHOOK_SECRET).update(rawBody).digest('hex')}`;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  // timingSafeEqual throws on a length mismatch, which is itself an answer.
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 /** False until the human registers the App and fills in the env (design §"PREREQUISITE"). */
 export function isGithubConfigured(): boolean {
   return Boolean(GITHUB_APP_ID && PRIVATE_KEY);
@@ -40,12 +64,22 @@ export function isOauthConfigured(): boolean {
   return Boolean(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET);
 }
 
-// Thrown for anything GitHub-side. Carries a status so the service can map a
-// 404 from GitHub to our own 404 rather than a 500.
+/**
+ * Thrown for anything GitHub-side. Carries a status so the service can map a
+ * 404 from GitHub to our own 404 rather than a 500.
+ *
+ * `scope` says WHAT was not found, which matters more than it looks: a 404 on
+ * an installation means the app was uninstalled, but a 404 on a repository just
+ * means that repo is gone or renamed. Treating them alike disconnected a
+ * perfectly good integration the first time a repo went missing.
+ */
+export type GithubErrorScope = 'app' | 'installation' | 'repo';
+
 export class GithubError extends Error {
   constructor(
     message: string,
     public status: number,
+    public scope: GithubErrorScope = 'app',
   ) {
     super(message);
     this.name = 'GithubError';
@@ -69,7 +103,12 @@ function appJwt(): string {
   );
 }
 
-async function ghFetch<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+async function ghFetch<T>(
+  path: string,
+  token: string,
+  init?: RequestInit,
+  scope: GithubErrorScope = 'app',
+): Promise<T> {
   const res = await fetch(API + path, {
     ...init,
     headers: {
@@ -91,7 +130,7 @@ async function ghFetch<T>(path: string, token: string, init?: RequestInit): Prom
     } catch {
       // non-JSON error body — the status line is enough
     }
-    throw new GithubError(detail, res.status);
+    throw new GithubError(detail, res.status, scope);
   }
   return (await res.json()) as T;
 }
@@ -105,6 +144,8 @@ export async function installationToken(installationId: string): Promise<string>
     `/app/installations/${installationId}/access_tokens`,
     appJwt(),
     { method: 'POST' },
+    // Refusal here IS the revocation signal — the installation itself is gone.
+    'installation',
   );
   return token;
 }
@@ -119,6 +160,8 @@ export async function getInstallation(installationId: string): Promise<GithubIns
   const data = await ghFetch<{ id: number; account: { login: string } | null }>(
     `/app/installations/${installationId}`,
     appJwt(),
+    undefined,
+    'installation',
   );
   return { id: String(data.id), account_login: data.account?.login ?? 'unknown' };
 }

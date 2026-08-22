@@ -1,5 +1,6 @@
 import { Worker } from 'bullmq';
 import { redisConnection } from '../lib/redis.js';
+import { logErr } from '../lib/safe-log.js';
 import type { ScoreJob } from '../queues/scoring.queue.js';
 import {
   checkSessionComplete,
@@ -20,7 +21,7 @@ export const scoringWorker = new Worker<ScoreJob>(
       const attempts = job.opts.attempts ?? 1;
       if (job.attemptsMade + 1 >= attempts) {
         // Terminal failure — mark it, surface it in the report, don't block the session.
-        console.error(`[scoring] answer ${answerId} failed permanently:`, err);
+        logErr('scoring', `answer ${answerId} failed permanently`, err);
         await markAnswerFailed(answerId);
         await checkSessionComplete(sessionId);
         return;

@@ -1,6 +1,7 @@
-import { Router, type Request, type Response } from 'express';
+import express, { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
+import { rateLimit } from '../middleware/rate-limit.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import { AUTH_COOKIE, verifyInterviewerToken } from '../lib/jwt.js';
 import {
@@ -14,6 +15,9 @@ import {
   startSync,
 } from '../services/integration.service.js';
 import { latestScans, startScan } from '../services/scan.service.js';
+import { isWebhookConfigured, verifyWebhookSignature } from '../lib/github.js';
+import { markInstallationRevoked, setStrictMode } from '../services/integration.service.js';
+import { logErr } from '../lib/safe-log.js';
 
 export const integrationsRouter = Router();
 
@@ -116,6 +120,87 @@ integrationsRouter.get(
   }),
 );
 
+
+const strictSchema = z.object({ strict_mode: z.boolean() });
+
+// PATCH /integrations/github/strict-mode — structure-only analysis (§2.5).
+integrationsRouter.patch(
+  '/github/strict-mode',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = strictSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'strict_mode must be a boolean');
+    res.json(await setStrictMode(req.interviewer!.id, parsed.data.strict_mode));
+  }),
+);
+
+// ── GitHub webhook (design §2.3, Slice 4) ────────────────────────────────────
+/**
+ * POST /integrations/github/webhook
+ *
+ * Unauthenticated by session — GitHub has no cookie. The signature IS the
+ * authentication, computed over the RAW body, which is why this route parses
+ * raw rather than JSON. Mounting it before the router's JSON parsing keeps the
+ * bytes GitHub signed intact; a re-serialised body would not match.
+ *
+ * Only `installation.deleted` and `installation.suspend` matter here: both mean
+ * we can no longer use the installation, and the honest thing is to say so on
+ * the integrations screen rather than let the manager discover it from a failed
+ * scan. Everything else is acknowledged and ignored, because GitHub retries
+ * anything it does not see a 2xx for.
+ */
+integrationsRouter.post(
+  '/github/webhook',
+  express.raw({ type: 'application/json', limit: '1mb' }),
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!isWebhookConfigured()) {
+      // Not an error: a deployment without the secret simply does not use
+      // webhooks. Say so rather than pretending to have handled it.
+      res.status(503).json({ error: 'Webhooks are not configured', code: 'WEBHOOK_NOT_CONFIGURED' });
+      return;
+    }
+
+    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+    const signature = req.header('x-hub-signature-256');
+    if (!verifyWebhookSignature(raw, signature)) {
+      // 401 with no detail. Telling an unsigned caller *why* it failed helps
+      // only the caller who should not be here.
+      res.status(401).json({ error: 'Invalid signature', code: 'BAD_SIGNATURE' });
+      return;
+    }
+
+    const event = req.header('x-github-event') ?? '';
+    let payload: { action?: string; installation?: { id?: number } } = {};
+    try {
+      payload = JSON.parse(raw.toString('utf8'));
+    } catch {
+      res.status(400).json({ error: 'Malformed payload', code: 'BAD_PAYLOAD' });
+      return;
+    }
+
+    const installationId = payload.installation?.id;
+    const revoking =
+      event === 'installation' &&
+      (payload.action === 'deleted' || payload.action === 'suspend');
+
+    if (revoking && installationId) {
+      try {
+        const changed = await markInstallationRevoked(String(installationId));
+        if (changed) {
+          console.log(`[webhook] installation ${installationId} revoked (${payload.action})`);
+        }
+      } catch (err) {
+        // Never 500 at GitHub: it would retry for hours over something only we
+        // can fix. Record it and acknowledge.
+        logErr('webhook', `revoking installation ${installationId}`, err);
+      }
+    }
+
+    // 2xx for everything we authenticated, handled or not.
+    res.status(204).end();
+  }),
+);
+
 // ── Sync: recovering an installation that never came back through a redirect ─
 
 // POST /integrations/github/sync/start — begin the authorisation that proves
@@ -184,6 +269,9 @@ integrationsRouter.delete(
 integrationsRouter.post(
   '/github/repos/:id/scan',
   authInterviewer,
+  // A scan downloads a repository and spends tokens across a dozen model
+  // calls. Ten an hour is far above deliberate use and far below a runaway.
+  rateLimit({ bucket: 'scan', limit: 10, windowSeconds: 3600 }),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     if (!id) throw new AppError(400, 'VALIDATION', 'repository id is required');

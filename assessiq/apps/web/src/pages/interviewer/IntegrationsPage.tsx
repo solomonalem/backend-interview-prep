@@ -191,6 +191,19 @@ export default function IntegrationsPage() {
     }
   };
 
+  const toggleStrict = async (next: boolean) => {
+    setBusy('strict');
+    setError(null);
+    try {
+      await integrationsApi.setStrictMode(next);
+      await load();
+    } catch (e) {
+      setError(e instanceof ApiRequestError ? e.message : 'Could not change the analysis mode.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const disconnect = async () => {
     setBusy('disconnect');
     setError(null);
