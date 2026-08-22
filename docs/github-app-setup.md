@@ -19,7 +19,7 @@ Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
 |---|---|
 | **GitHub App name** | `AssessIQ` (or `AssessIQ Dev` — names are globally unique) |
 | **Homepage URL** | `http://localhost:5173` in dev |
-| **Webhook** | **uncheck Active** for now (webhooks land in Slice 4) |
+| **Webhook** | leave **Active** unchecked for local dev; enable it for production — see [§5](#5-webhooks-revocation-from-githubs-side) |
 
 ### The three URL settings — get these right or the flows fail silently
 
@@ -84,8 +84,10 @@ For **Sync from GitHub** (below), also collect:
 - **Client ID** — shown near the App ID, looks like `Iv1.…` → `GITHUB_CLIENT_ID`
 - **Client secret** — *Generate a new client secret* → `GITHUB_CLIENT_SECRET`
 
-`GITHUB_WEBHOOK_SECRET` is only needed once webhook-driven revocation lands in
-Slice 4. Set it now if you like — nothing reads it yet.
+- **Webhook secret** — any high-entropy string you choose, entered identically
+  in the App's Webhook section and in `.env` → `GITHUB_WEBHOOK_SECRET`. See
+  [§5](#5-webhooks-revocation-from-githubs-side); unset simply means the
+  webhook endpoint answers 503 and revocation is detected on next use instead.
 
 ## 3. Put them in `apps/api/.env`
 
@@ -125,6 +127,56 @@ If you land back with a **warning banner instead of the repo list**, match it he
 
 Changing repositories later and finding the list unchanged means **Redirect on
 update** is unchecked.
+
+---
+
+## 5. Webhooks: revocation from GitHub's side
+
+Revocation is detected two ways, and they are deliberately redundant. Without
+webhooks, an uninstalled app is noticed the next time we try to use it — GitHub
+refuses to mint an installation token, and the integration flips to `revoked`
+then. Webhooks make that immediate rather than lazy, which matters in
+production because a manager who uninstalls expects us to have stopped
+straight away, not at the next scan.
+
+**Dev — signature testing without exposing a local port.** Leave **Active**
+unchecked on the App. Set `GITHUB_WEBHOOK_SECRET` in `apps/api/.env` to any
+high-entropy string and POST to the endpoint directly, signing the body with
+the same secret. This is how the signed / tampered / unsigned paths were
+verified; it needs no tunnel, because the endpoint trusts the HMAC rather than
+the origin.
+
+```bash
+BODY='{"action":"deleted","installation":{"id":12345678}}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | awk '{print $2}')"
+curl -i -X POST http://localhost:3001/api/v1/integrations/github/webhook \
+  -H 'Content-Type: application/json' \
+  -H 'X-GitHub-Event: installation' \
+  -H "X-Hub-Signature-256: $SIG" \
+  --data "$BODY"
+# 204 signed · 401 tampered or unsigned · 503 when GITHUB_WEBHOOK_SECRET is unset
+```
+
+**Production — what to enable in the App settings.**
+
+| Field | Value |
+|---|---|
+| **Webhook → Active** | checked |
+| **Webhook URL** | `https://<your-api-host>/api/v1/integrations/github/webhook` |
+| **Webhook secret** | the same string as `GITHUB_WEBHOOK_SECRET` in the API's env |
+| **Subscribe to events** | **Installation** (the only event acted on) |
+
+Note the webhook URL is a **third** endpoint, distinct from the Setup URL and
+the Callback URL in the table above — pointing any two of them at the same
+place is the failure this document keeps warning about.
+
+Only `installation` with action `deleted` or `suspend` changes anything; every
+other authenticated delivery is acknowledged and ignored. The endpoint always
+answers 2xx once a signature verifies, including when our own handling fails,
+because a 500 makes GitHub retry for hours over something only we can fix.
+
+The signature is computed over the raw request bytes, so this one route bypasses
+the JSON body parser — a re-serialised body does not reproduce the signed bytes.
 
 ---
 
