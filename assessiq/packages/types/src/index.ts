@@ -7,3 +7,4 @@ export * from './assessment.js';
 export * from './session.js';
 export * from './report.js';
 export * from './study.js';
+export * from './integration.js';

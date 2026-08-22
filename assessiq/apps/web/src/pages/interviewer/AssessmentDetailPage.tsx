@@ -10,8 +10,15 @@ import {
   ArrowUpRight,
   ListChecks,
   Pencil,
+  UserPlus,
+  Mail,
+  MailCheck,
+  MailX,
+  AlertTriangle,
 } from 'lucide-react';
-import type { AssessmentDetail, LinkStatus } from '@assessiq/types';
+import type {
+  CreateLinkResponse,
+  DuplicateCandidate, AssessmentDetail, LinkStatus } from '@assessiq/types';
 import {
   Avatar,
   Badge,
@@ -44,6 +51,47 @@ function fullUrl(token: string): string {
   return `${window.location.origin}/a/${token}`;
 }
 
+
+/** Says what actually happened to the invite email. Delivery is never assumed. */
+function InviteOutcome({ result }: { result: CreateLinkResponse }) {
+  const name = result.candidate_label ?? 'Candidate';
+  if (result.email_status === 'sent') {
+    return (
+      <p className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <MailCheck size={15} className="mt-0.5 shrink-0" />
+        Invite emailed to <strong>{result.candidate_email}</strong>.
+      </p>
+    );
+  }
+  if (result.email_status === 'failed') {
+    return (
+      <p className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+        <MailX size={15} className="mt-0.5 shrink-0" />
+        <span>
+          Link created for <strong>{name}</strong>, but the email to{' '}
+          {result.candidate_email} did not send: {result.email_error}. Copy the link below and
+          send it yourself.
+        </span>
+      </p>
+    );
+  }
+  if (result.email_status === 'skipped_not_configured') {
+    return (
+      <p className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <MailX size={15} className="mt-0.5 shrink-0" />
+        Link created — email is not configured on this server, so nothing was sent. Copy the link
+        below.
+      </p>
+    );
+  }
+  return (
+    <p className="flex items-start gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
+      <Link2 size={15} className="mt-0.5 shrink-0 text-slate-400" />
+      Link created for <strong className="mx-1">{name}</strong> — copy it below.
+    </p>
+  );
+}
+
 export default function AssessmentDetailPage() {
   const { id } = useParams();
   const [detail, setDetail] = useState<AssessmentDetail | null>(null);
@@ -51,6 +99,11 @@ export default function AssessmentDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [label, setLabel] = useState('');
+  const [email, setEmail] = useState('');
+  // Set when the API returns DUPLICATE_CANDIDATE — the manager confirms or cancels.
+  const [duplicate, setDuplicate] = useState<DuplicateCandidate | null>(null);
+  // Outcome of the last invite, so delivery is never silently assumed.
+  const [inviteResult, setInviteResult] = useState<CreateLinkResponse | null>(null);
   // Inline rename — the label is the only handle on a candidate, so it has to
   // be fixable after the link exists.
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -92,16 +145,29 @@ export default function AssessmentDetailPage() {
     }
   };
 
-  const generate = async () => {
+  const generate = async (confirmDuplicate = false) => {
     if (!id) return;
     setGenerating(true);
     setError(null);
+    setInviteResult(null);
     try {
-      await assessmentsApi.createLink(id, label.trim() ? { candidate_label: label.trim() } : {});
+      const res = await assessmentsApi.createLink(id, {
+        ...(label.trim() ? { candidate_label: label.trim() } : {}),
+        ...(email.trim() ? { candidate_email: email.trim() } : {}),
+        ...(confirmDuplicate ? { confirm_duplicate: true } : {}),
+      });
       setLabel('');
+      setEmail('');
+      setDuplicate(null);
+      setInviteResult(res);
       await load();
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : 'Could not generate link');
+      // A repeat candidate isn't an error to show — it's a question to ask.
+      if (err instanceof ApiRequestError && err.code === 'DUPLICATE_CANDIDATE') {
+        setDuplicate((err.body?.duplicate as DuplicateCandidate) ?? null);
+      } else {
+        setError(err instanceof ApiRequestError ? err.message : 'Could not generate link');
+      }
     } finally {
       setGenerating(false);
     }
@@ -168,25 +234,68 @@ export default function AssessmentDetailPage() {
         />
       </div>
 
-      {/* Generate link */}
+      {/* Invite — one assessment, many candidates. */}
       <Card className="mb-6 bg-brand-soft border-brand-100">
         <CardBody className="space-y-3">
           <div className="flex items-center gap-2">
-            <Link2 size={16} className="text-brand-600" />
-            <h3 className="font-semibold text-slate-800">Generate a candidate link</h3>
+            <UserPlus size={16} className="text-brand-600" />
+            <h3 className="font-semibold text-slate-800">Invite another candidate</h3>
+            <span className="text-xs text-slate-500">
+              — each invite is its own link, tracked separately
+            </span>
           </div>
-          <div className="flex flex-col sm:flex-row gap-2">
+          <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
             <Input
-              placeholder="Candidate label (optional) — e.g. Alex Chen"
+              placeholder="Name (optional) — e.g. Alex Chen"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              className="flex-1"
             />
-            <Button onClick={generate} disabled={generating}>
+            <Input
+              type="email"
+              placeholder="Email (optional) — we'll send the link"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <Button onClick={() => generate()} disabled={generating}>
               {generating ? <Spinner className="border-white/40 border-t-white" /> : <Link2 size={16} />}
-              {generating ? 'Generating…' : 'Generate link'}
+              {generating ? 'Creating…' : email.trim() ? 'Send invite' : 'Create link'}
             </Button>
           </div>
+          <p className="text-xs text-slate-500">
+            Both optional — leave them blank for a quick link you copy yourself.
+          </p>
+
+          {/* Duplicate warning — a question, not an error. */}
+          {duplicate && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+              <p className="flex items-start gap-2 text-sm text-amber-900">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                <span>
+                  <strong>{duplicate.candidate_email}</strong>
+                  {duplicate.candidate_label ? ` (${duplicate.candidate_label})` : ''} already
+                  completed this assessment on{' '}
+                  {new Date(duplicate.completed_at).toLocaleDateString(undefined, {
+                    dateStyle: 'medium',
+                  })}
+                  {duplicate.overall_score !== null && <> — scored <strong>{duplicate.overall_score}%</strong></>}
+                  . Send it again anyway?
+                </span>
+              </p>
+              <div className="mt-2.5 flex gap-2">
+                <Button size="sm" onClick={() => void generate(true)} disabled={generating}>
+                  {generating ? <Spinner className="border-white/40 border-t-white" /> : null}
+                  Send again
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setDuplicate(null)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Delivery outcome — never assume it sent. */}
+          {inviteResult && <InviteOutcome result={inviteResult} />}
+
           {error && (
             <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
               {error}
@@ -261,9 +370,16 @@ export default function AssessmentDetailPage() {
                         />
                       </button>
                     )}
-                    <code className="text-xs text-slate-400 font-mono truncate block">
-                      /a/{l.token}
-                    </code>
+                    {l.candidate_email ? (
+                      <p className="flex items-center gap-1.5 truncate text-xs text-slate-500">
+                        <Mail size={11} className="shrink-0" />
+                        {l.candidate_email}
+                      </p>
+                    ) : (
+                      <code className="block truncate font-mono text-xs text-slate-400">
+                        /a/{l.token}
+                      </code>
+                    )}
                   </div>
                   <span className={`text-[11px] font-medium px-2 py-0.5 rounded-md ${meta.tone}`}>
                     {meta.label}

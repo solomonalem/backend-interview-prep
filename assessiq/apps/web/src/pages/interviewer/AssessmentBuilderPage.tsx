@@ -13,12 +13,16 @@ import {
   FileText,
   Wand2,
   PenLine,
+  History,
+  FileCode2,
 } from 'lucide-react';
 import type {
   CreateAssessmentRequest,
   DecodeJdResponse,
   Difficulty,
+  PreviouslyUsedQuestion,
   QuestionDraft,
+  QuestionListItem,
   QuestionMatchItem,
   QuestionType,
 } from '@assessiq/types';
@@ -148,6 +152,15 @@ const MAX_AUTOFILL_TOPICS = 4;
 // generates when this topic is nearly uncovered. No fixed pool size — padding
 // to a number meant every search on a covered topic paid for generation.
 
+// How many previously-used questions to show before the "show all" toggle. The
+// list is history, so it only grows; an unbounded one would bury the sources
+// below it.
+const PREVIOUSLY_USED_PREVIEW = 6;
+
+function fmtUsedDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 export default function AssessmentBuilderPage() {
   const navigate = useNavigate();
 
@@ -179,10 +192,23 @@ export default function AssessmentBuilderPage() {
   const [ownText, setOwnText] = useState('');
   const [draftingOwn, setDraftingOwn] = useState(false);
 
+  // ── Previously used — the third source, alongside search and write-your-own.
+  // Vetted and already used, so these go straight to the tray with no review.
+  const [previouslyUsed, setPreviouslyUsed] = useState<PreviouslyUsedQuestion[]>([]);
+  // Fourth source (design §8.3): questions written from this manager's own
+  // codebase. Only appears when there are any — an empty card for a manager
+  // with no integration is noise.
+  const [grounded, setGrounded] = useState<QuestionListItem[]>([]);
+  const [loadingPrev, setLoadingPrev] = useState(true);
+  const [prevError, setPrevError] = useState<string | null>(null);
+  const [showAllPrev, setShowAllPrev] = useState(false);
+
   // ── Selection tray — the single source of truth for the assessment.
   // A Map keeps insertion order, so question_ids are ordered as selected.
-  // Nothing is ever added here except by an explicit click.
-  const [tray, setTray] = useState<Map<string, QuestionMatchItem>>(new Map());
+  // Nothing is ever added here except by an explicit click. Typed to the base
+  // question shape because items arrive from three sources — search results,
+  // reviewed drafts, and reuse — and the tray only ever needs the common fields.
+  const [tray, setTray] = useState<Map<string, QuestionListItem>>(new Map());
 
   const [title, setTitle] = useState('');
 
@@ -206,6 +232,34 @@ export default function AssessmentBuilderPage() {
       .list({ limit: 100 })
       .then((r) => setTopicHints([...new Set(r.questions.map((q) => q.topic))]))
       .catch(() => setTopicHints([]));
+  }, []);
+
+  // Repo-grounded questions. Vetted ones go straight to the tray; drafts still
+  // route through review, exactly like any other draft.
+  useEffect(() => {
+    questionsApi
+      .list({ source: 'repo_grounded', limit: 50 })
+      // Vetted first: those are usable right now, drafts still need review.
+      .then((r) =>
+        setGrounded(
+          [...r.questions].sort((a, b) =>
+            a.status === b.status ? 0 : a.status === 'vetted' ? -1 : 1,
+          ),
+        ),
+      )
+      .catch(() => setGrounded([]));
+  }, []);
+
+  // Reuse history. Independent of the position fields — it is the manager's own
+  // past, not a search — so it loads once and is usable before anything is typed.
+  useEffect(() => {
+    questionsApi
+      .previouslyUsed(100)
+      .then((r) => setPreviouslyUsed(r.questions))
+      .catch(() =>
+        setPrevError("Could not load the questions you've used before."),
+      )
+      .finally(() => setLoadingPrev(false));
   }, []);
 
   // Only offer roles the bank can actually serve — an unservable role in the
@@ -339,6 +393,7 @@ export default function AssessmentBuilderPage() {
         type: q.type,
         domain: q.domain,
         status: q.status,
+        source: q.source,
         core_answer_display: q.core_answer_display,
         senior_signal_display: q.senior_signal_display,
         trap_display: q.trap_display,
@@ -358,7 +413,11 @@ export default function AssessmentBuilderPage() {
   // A vetted bank question goes straight in. A draft cannot: it opens the
   // review panel first, so no unreviewed rubric can reach an assessment.
   const toggleQuestion = async (id: string) => {
-    const found = results?.find((q) => q.id === id) ?? tray.get(id);
+    const found: QuestionListItem | undefined =
+      results?.find((q) => q.id === id) ??
+      previouslyUsed.find((q) => q.id === id) ??
+      grounded.find((q) => q.id === id) ??
+      tray.get(id);
     if (!found) return;
 
     if (!tray.has(id) && found.status === 'draft') {
@@ -398,6 +457,7 @@ export default function AssessmentBuilderPage() {
       type: q.type,
       domain: q.domain,
       status: q.status,
+      source: q.source,
       core_answer_display: q.core_answer_display,
       senior_signal_display: q.senior_signal_display,
       trap_display: q.trap_display,
@@ -449,6 +509,10 @@ export default function AssessmentBuilderPage() {
       return next;
     });
   };
+
+  const visiblePrev = showAllPrev
+    ? previouslyUsed
+    : previouslyUsed.slice(0, PREVIOUSLY_USED_PREVIEW);
 
   const trayItems = useMemo(() => [...tray.values()], [tray]);
   const canSave = title.trim().length > 0 && tray.size > 0 && !saving;
@@ -743,6 +807,114 @@ export default function AssessmentBuilderPage() {
                   </Button>
                 </div>
               </fieldset>
+            </CardBody>
+          </Card>
+
+          {/* From your codebase — questions grounded in a real scan finding.
+              Hidden entirely when there are none, so a manager without a
+              connected repository never sees a dead card. */}
+          {grounded.length > 0 && (
+            <Card>
+              <CardHeader>
+                <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                  <FileCode2 size={16} className="text-emerald-600" /> Or use a question from your
+                  codebase
+                </h3>
+                <span className="text-xs text-slate-400">
+                  {grounded.filter((q) => q.status === 'vetted').length} ready
+                  {grounded.some((q) => q.status === 'draft') &&
+                    ` · ${grounded.filter((q) => q.status === 'draft').length} need review`}
+                </span>
+              </CardHeader>
+              <CardBody className="space-y-3">
+                <p className="text-xs text-slate-400">
+                  Written from findings in a repository you connected — this is where a question
+                  you approved on a scan ends up. Candidates never see the repository, the file, or
+                  that the question came from your code.
+                </p>
+                <fieldset
+                  disabled={busy}
+                  className={cn('grid items-start gap-2.5 2xl:grid-cols-2', busy && 'opacity-60')}
+                >
+                  {grounded.map((q) => (
+                    <QuestionCard
+                      key={q.id}
+                      question={q}
+                      selected={tray.has(q.id)}
+                      onToggle={toggleQuestion}
+                    />
+                  ))}
+                </fieldset>
+              </CardBody>
+            </Card>
+          )}
+
+          {/* Previously used — the third source. Not a search and not a
+              generation: it is this manager's own history, so it needs no
+              position fields, costs no AI call, and its questions are vetted
+              by definition. Selecting one goes straight to the tray. */}
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <History size={16} className="text-brand-500" /> Or reuse a previously used question
+              </h3>
+              <span className="text-xs text-slate-400">
+                {loadingPrev ? 'loading…' : `${previouslyUsed.length} from past assessments`}
+              </span>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              {prevError ? (
+                <p className="text-xs text-rose-600 bg-rose-50 border border-rose-100 rounded-md px-2.5 py-2">
+                  {prevError}
+                </p>
+              ) : loadingPrev ? (
+                <div className="flex items-center gap-2.5 px-1 py-3 text-xs text-slate-400">
+                  <Spinner /> Looking up what you've used before…
+                </div>
+              ) : previouslyUsed.length === 0 ? (
+                <EmptyState
+                  icon={<History size={22} />}
+                  title="Nothing reused yet"
+                  hint="Questions you put in an assessment show up here afterwards, so your next one starts from what you've already asked."
+                />
+              ) : (
+                <>
+                  <p className="text-xs text-slate-400">
+                    Already vetted and already asked — these go straight into the assessment, no
+                    review needed.
+                  </p>
+                  <fieldset
+                    disabled={busy}
+                    className={cn('grid items-start gap-2.5 2xl:grid-cols-2', busy && 'opacity-60')}
+                  >
+                    {visiblePrev.map((q) => (
+                      <QuestionCard
+                        key={q.id}
+                        question={q}
+                        selected={tray.has(q.id)}
+                        onToggle={toggleQuestion}
+                        footnote={
+                          <p className="mt-2 text-xs text-slate-400">
+                            used {q.used_count}×{' '}
+                            <span className="text-slate-300">·</span> last on{' '}
+                            {fmtUsedDate(q.last_used_at)} in{' '}
+                            <span className="text-slate-500">{q.last_used_in}</span>
+                          </p>
+                        }
+                      />
+                    ))}
+                  </fieldset>
+                  {previouslyUsed.length > PREVIOUSLY_USED_PREVIEW && (
+                    <div className="flex justify-center pt-0.5">
+                      <Button variant="secondary" onClick={() => setShowAllPrev((v) => !v)}>
+                        {showAllPrev
+                          ? 'Show fewer'
+                          : `Show all ${previouslyUsed.length} previously used`}
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
             </CardBody>
           </Card>
 

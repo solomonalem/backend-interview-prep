@@ -9,6 +9,8 @@ import type {
   QuestionMatchKey,
   QuestionMatchResponse,
   QuestionType,
+  PreviouslyUsedQuestion,
+  PreviouslyUsedResponse,
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
@@ -23,6 +25,9 @@ const PUBLIC_SELECT = {
   type: true,
   domain: true,
   status: true,
+  // Provenance. Safe on this select: it says a question came from a repo, not
+  // which repo — the citation itself lives on the interviewer-only draft shape.
+  source: true,
   core_answer_display: true,
   senior_signal_display: true,
   trap_display: true,
@@ -31,6 +36,7 @@ const PUBLIC_SELECT = {
 function buildWhere(f: QuestionFilters): Prisma.QuestionWhereInput {
   const where: Prisma.QuestionWhereInput = { is_active: true };
   if (f.topic) where.topic = f.topic;
+  if (f.source) where.source = f.source as Prisma.QuestionWhereInput['source'];
   if (f.difficulty) where.difficulty = f.difficulty as Difficulty;
   if (f.type) where.type = f.type as QuestionType;
   if (f.domain) where.domain = f.domain;
@@ -105,6 +111,56 @@ export async function matchQuestions(f: QuestionMatchFilters): Promise<QuestionM
     total: scored.length,
     page: 1,
     pages: Math.max(1, Math.ceil(scored.length / limit)),
+  };
+}
+
+// "Questions I've sent before" — a filtered view of the bank, not a new store.
+// A question qualifies when it sits in an AssessmentQuestion belonging to an
+// assessment this manager owns. Only vetted, still-active questions surface:
+// a draft has never legitimately reached an assessment, and a rejected question
+// (is_active: false) has left retrieval everywhere else, so it must leave here.
+//
+// Recency comes from the assessment that used it, since the join row carries no
+// timestamp of its own. Dedup and counting happen in memory for the same reason
+// matchQuestions ranks in memory — fine at bank scale; revisit with a SQL
+// DISTINCT ON if a single manager's history grows into the thousands.
+export async function listPreviouslyUsed(
+  ownerId: string,
+  limit = 50,
+): Promise<PreviouslyUsedResponse> {
+  const rows = await prisma.assessmentQuestion.findMany({
+    where: {
+      assessment: { owner_id: ownerId },
+      question: { is_active: true, status: 'vetted' },
+    },
+    select: {
+      assessment: { select: { title: true, created_at: true } },
+      question: { select: PUBLIC_SELECT },
+    },
+    // Most recently used first. The first row seen for a question id is
+    // therefore its latest use, which is what the dedup below keeps.
+    orderBy: { assessment: { created_at: 'desc' } },
+  });
+
+  const byQuestion = new Map<string, PreviouslyUsedQuestion>();
+  for (const row of rows) {
+    const seen = byQuestion.get(row.question.id);
+    if (seen) {
+      seen.used_count += 1;
+      continue;
+    }
+    byQuestion.set(row.question.id, {
+      ...(row.question as QuestionListItem),
+      used_count: 1,
+      last_used_at: row.assessment.created_at.toISOString(),
+      last_used_in: row.assessment.title,
+    });
+  }
+
+  const questions = [...byQuestion.values()];
+  return {
+    questions: questions.slice(0, Math.min(100, Math.max(1, limit))),
+    total: questions.length,
   };
 }
 

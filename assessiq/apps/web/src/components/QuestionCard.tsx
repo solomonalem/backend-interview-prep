@@ -1,4 +1,5 @@
-import { Check, Plus, Sparkles } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Check, FileCode2, Plus, Sparkles } from 'lucide-react';
 import type { QuestionListItem, QuestionMatchKey } from '@assessiq/types';
 import { Badge, Card, difficultyTone } from './ui';
 import { cn } from '../lib/cn';
@@ -30,11 +31,14 @@ export function QuestionCard({
   selected,
   onToggle,
   matchedOn,
+  footnote,
 }: {
   question: QuestionListItem;
   selected: boolean;
   onToggle: (id: string) => void;
   matchedOn?: QuestionMatchKey[];
+  /** Extra provenance line under the badges — e.g. where a reused question came from. */
+  footnote?: ReactNode;
 }) {
   return (
     <Card
@@ -56,6 +60,11 @@ export function QuestionCard({
           {selected ? <Check size={13} strokeWidth={3} /> : <Plus size={13} className="text-slate-400" />}
         </span>
         <div className="flex-1 min-w-0">
+          {question.source === 'repo_grounded' && (
+            <p className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+              <FileCode2 size={11} /> Grounded in your codebase
+            </p>
+          )}
           {question.status === 'draft' && (
             <p className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
               <Sparkles size={11} /> AI-generated — review before use
@@ -69,6 +78,7 @@ export function QuestionCard({
             {question.domain && <Badge tone="violet">{question.domain}</Badge>}
           </div>
           {matchedOn && <MatchHint matchedOn={matchedOn} />}
+          {footnote}
         </div>
       </button>
     </Card>

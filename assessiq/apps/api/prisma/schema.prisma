@@ -20,6 +20,8 @@ model User {
   updated_at    DateTime      @updatedAt
 
   assessments   Assessment[]
+  score_overrides Score[]     // scores this interviewer has overridden or flagged
+  repo_integrations RepoIntegration[]
 
   @@map("users")
 }
@@ -46,6 +48,17 @@ model Question {
   senior_signal_display   String
   trap_display            String
 
+  // ── Provenance (design §4) ─────────────────────────────────────────────────
+  // Where this question came from. Trustworthy from Slice 3 onwards; rows that
+  // predate it all read `manual`, since nothing recorded the difference at the
+  // time and guessing retroactively would be worse than a known gap.
+  source        QuestionSource @default(manual)
+  // The finding that motivated it, giving question → finding → file:lines.
+  // SetNull rather than Cascade: a vetted question outlives the scan that
+  // inspired it, and losing the citation must not delete the question.
+  repo_finding_id String?
+  repo_finding    RepoFinding? @relation(fields: [repo_finding_id], references: [id], onDelete: SetNull)
+
   // Metadata
   is_active     Boolean       @default(true)
   // vetted = human-approved and safe to use as-is. draft = AI-generated and
@@ -68,6 +81,12 @@ model Question {
 enum QuestionStatus {
   vetted
   draft
+}
+
+enum QuestionSource {
+  manual       // written by a human
+  generated    // AI-written from a topic
+  repo_grounded // AI-written from a finding about the manager's own codebase
 }
 
 enum Difficulty {
@@ -136,7 +155,11 @@ model AssessmentLink {
   assessment_id   String
   assessment      Assessment  @relation(fields: [assessment_id], references: [id], onDelete: Cascade)
 
-  candidate_label String?     // e.g. "Candidate A" or email — optional
+  candidate_label String?     // e.g. "Candidate A" — optional, auto-defaults to "Candidate N"
+  // Optional. When set, the link is emailed to the candidate and this becomes
+  // the identity we can de-duplicate on — a candidate has no account, so it is
+  // the only reliable way to tell "already took this" from "new person".
+  candidate_email String?
   expires_at      DateTime
   opened_at       DateTime?   // set when candidate first clicks link
   session_id      String?     @unique  // set when session is created from this link
@@ -145,6 +168,7 @@ model AssessmentLink {
 
   session     Session?  @relation(fields: [session_id], references: [id])
 
+  @@index([assessment_id, candidate_email])
   @@map("assessment_links")
 }
 
@@ -253,7 +277,34 @@ model Score {
   model_used  String    // e.g. "claude-sonnet-4-6"
   scored_at   DateTime  @default(now())
 
+  // ── Human override ─────────────────────────────────────────────────────────
+  // The interviewer has the final say, but the AI's own numbers are evidence of
+  // how the rubric was applied — so an override is stored ALONGSIDE, never over
+  // the top. Every column above this line is written once, by the scorer, and
+  // is never modified by an override.
+  //
+  // All nullable: a score with no override is the normal case. `adjusted`
+  // carries at least one number; `disagree` may carry none, which is how an
+  // interviewer registers "this is wrong" without inventing a figure.
+  override_flag           OverrideFlag?
+  override_note           String?       // required whenever a flag is set
+  overridden_total_pct    Int?
+  // Per-component overrides. Any left null falls back to the AI's value, so a
+  // manager can correct senior signal alone without restating the other three.
+  overridden_core_pct           Int?
+  overridden_senior_signal_pct  Int?
+  overridden_trap_pct           Int?
+  overridden_evidence_pct       Int?
+  overridden_by           String?
+  overridden_by_user      User?         @relation(fields: [overridden_by], references: [id])
+  overridden_at           DateTime?
+
   @@map("scores")
+}
+
+enum OverrideFlag {
+  adjusted // the interviewer supplied corrected numbers
+  disagree // the interviewer disagrees; numbers optional
 }
 
 enum ConfidenceFlag {
@@ -378,4 +429,155 @@ enum StoryType {
   feature
   incident
   architecture
+}
+
+// ─── REPO GROUNDING (docs/DESIGN_REPO_GROUNDING.md) ──────────────────────────
+// A manager connects a GitHub repository so questions can be grounded in the
+// system a candidate would actually work on.
+//
+// CARDINAL RULE (design §2.2): source code is NEVER stored. These tables hold
+// the connection and which repos it covers. Derived findings and citations
+// arrive in Slice 2; file contents never do, anywhere.
+
+model RepoIntegration {
+  id              String   @id @default(cuid())
+  owner_id        String
+  owner           User     @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+
+  // 'github' today. The column exists so GitLab/Bitbucket can reuse these
+  // tables later — everything after the clone step is provider-agnostic.
+  provider        String   @default("github")
+
+  // The GitHub App installation. Not a credential: tokens are minted from it
+  // on demand via the app's private key and expire in an hour, so there is
+  // nothing long-lived here to leak.
+  installation_id String
+  account_login   String   // the org/user the app is installed on
+
+  // revoked = the manager disconnected, here or on GitHub. The row and its
+  // repos are kept (derived data survives, per §2.1); only re-scanning stops.
+  status          IntegrationStatus @default(active)
+
+  // Analysis sees only structural summaries, never raw code bodies (§2.5).
+  // Lives here from day one, as the design requires; Slice 2 consumes it.
+  strict_mode     Boolean  @default(false)
+
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  repos           RepoRef[]
+
+  // One integration per provider per owner. Reconnecting after a disconnect
+  // updates this row rather than orphaning the repos hanging off it.
+  @@unique([owner_id, provider])
+  @@map("repo_integrations")
+}
+
+enum IntegrationStatus {
+  active
+  revoked
+}
+
+model RepoRef {
+  id              String          @id @default(cuid())
+  integration_id  String
+  integration     RepoIntegration @relation(fields: [integration_id], references: [id], onDelete: Cascade)
+
+  full_name       String          // "org/repo"
+  default_branch  String
+
+  // The most recent scan, for showing state without loading the whole history.
+  // Intentionally not a relation: RepoScan already points here, and a second
+  // FK in the other direction would make the two able to disagree.
+  last_scan_id    String?
+
+  created_at      DateTime        @default(now())
+
+  scans           RepoScan[]
+
+  @@unique([integration_id, full_name])
+  @@index([integration_id])
+  @@map("repo_refs")
+}
+
+// ─── REPO SCANS (design §5) ──────────────────────────────────────────────────
+// One run of the pipeline: snapshot → detect stack → select files → analyse →
+// persist findings → wipe. The snapshot lives in a temp directory for the
+// duration of the job and is deleted in a finally block; NOTHING about it is
+// stored here beyond counts.
+
+model RepoScan {
+  id           String     @id @default(cuid())
+  repo_ref_id  String
+  repo_ref     RepoRef    @relation(fields: [repo_ref_id], references: [id], onDelete: Cascade)
+
+  status       ScanStatus @default(queued)
+  started_at   DateTime?
+  finished_at  DateTime?
+
+  // Readable failure text. Must never carry file contents (§2.2) — the pipeline
+  // constructs these messages itself rather than passing raw errors through.
+  error        String?
+
+  // { files_seen, files_selected, files_analyzed, tokens_used, stack: [...] }.
+  // Counts and labels only.
+  stats        Json?
+
+  // True when analysis failed partway: the findings from completed batches are
+  // kept rather than thrown away, but the scan is not a full picture.
+  partial      Boolean    @default(false)
+
+  created_at   DateTime   @default(now())
+
+  findings     RepoFinding[]
+
+  @@index([repo_ref_id])
+  @@map("repo_scans")
+}
+
+enum ScanStatus {
+  queued
+  cloning
+  analyzing
+  done
+  failed
+}
+
+// A derived observation about the repository. `detail` is prose written by the
+// analyser ABOUT the code — never the code itself. `excerpt` is the single
+// exception and is capped hard (§2.2): at most 3 lines, and empty in strict mode.
+model RepoFinding {
+  id           String      @id @default(cuid())
+  scan_id      String
+  scan         RepoScan    @relation(fields: [scan_id], references: [id], onDelete: Cascade)
+
+  kind         FindingKind
+  title        String      // e.g. "Outbox pattern in order-service"
+  detail       String      // 1–3 sentences, derived — never raw code
+
+  // Citation, so a manager can judge whether a grounded question is fair.
+  file_path    String?
+  line_start   Int?
+  line_end     Int?
+  excerpt      String?     // ≤3 lines; null in strict mode
+
+  // Question ids generated from this finding — a denormalised counter so the
+  // findings list can show "2 questions" without joining.
+  used_in_questions String[] @default([])
+
+  questions    Question[]
+
+  created_at   DateTime    @default(now())
+
+  @@index([scan_id])
+  @@index([kind])
+  @@map("repo_findings")
+}
+
+enum FindingKind {
+  stack
+  pattern
+  risk
+  architecture
+  domain
 }

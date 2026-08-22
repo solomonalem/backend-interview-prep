@@ -1,6 +1,9 @@
 import type {
   ApproveQuestionRequest,
   DraftRubricRequest,
+  GenerateFromRepoRequest,
+  GenerateFromRepoResponse,
+  GroundedQuestionsResponse,
   GenerateQuestionsRequest,
   GenerateQuestionsResponse,
   QuestionDraft,
@@ -10,6 +13,7 @@ import type {
   QuestionMatchResponse,
   QuestionPoolRequest,
   QuestionPoolResponse,
+  PreviouslyUsedResponse,
   RefineQuestionRequest,
 } from '@assessiq/types';
 import { api } from './client';
@@ -37,6 +41,12 @@ export const questionsApi = {
     return api.get<QuestionMatchResponse>(`/questions/match?${p.toString()}`);
   },
 
+  // Vetted questions this manager has already used, most-recently-used first.
+  previouslyUsed: (limit?: number) =>
+    api.get<PreviouslyUsedResponse>(
+      `/questions/previously-used${limit ? `?limit=${limit}` : ''}`,
+    ),
+
   // ── Stage B ────────────────────────────────────────────────────────────────
   // Bank matches topped up with generated drafts. Slow on a cold bank — every
   // shortfall costs a Claude call.
@@ -44,6 +54,16 @@ export const questionsApi = {
 
   generate: (body: GenerateQuestionsRequest) =>
     api.post<GenerateQuestionsResponse>('/questions/generate', body),
+
+  // Questions written from scan findings. Ordinary drafts — same review gate.
+  // 202 — queued, not generated. Poll `grounded` for the drafts as they land.
+  generateFromRepo: (body: GenerateFromRepoRequest) =>
+    api.post<GenerateFromRepoResponse>('/questions/generate-from-repo', body),
+
+  grounded: (scanId?: string) =>
+    api.get<GroundedQuestionsResponse>(
+      `/questions/grounded${scanId ? `?scan_id=${scanId}` : ''}`,
+    ),
 
   // Manager writes the question, AI drafts its rubric. Same review flow.
   draftRubric: (body: DraftRubricRequest) => api.post<QuestionDraft>('/questions/draft-rubric', body),

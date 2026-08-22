@@ -7,6 +7,8 @@ import { assessmentsRouter } from './routes/assessments.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { reportsRouter } from './routes/reports.js';
 import { studyRouter } from './routes/study.js';
+import { integrationsRouter } from './routes/integrations.js';
+import { repoScansRouter } from './routes/repo-scans.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
 
 // Express app factory (exported for testing). Resource routers mount under /api/v1.
@@ -14,7 +16,16 @@ export function createApp(): Express {
   const app = express();
 
   app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
-  app.use(express.json());
+
+  // The GitHub webhook is authenticated by an HMAC over the bytes GitHub sent,
+  // so it must reach its handler unparsed — json() consumes the stream, and a
+  // re-serialised body does not reproduce the signed bytes. Every other route
+  // gets the normal parser.
+  const WEBHOOK_PATH = '/api/v1/integrations/github/webhook';
+  app.use((req, res, next) => {
+    if (req.path === WEBHOOK_PATH) return next();
+    express.json()(req, res, next);
+  });
   app.use(cookieParser());
 
   // Infra health check (used by docker/deploy probes and local smoke tests).
@@ -29,6 +40,8 @@ export function createApp(): Express {
   api.use('/sessions', sessionsRouter);
   api.use('/reports', reportsRouter);
   api.use('/study', studyRouter);
+  api.use('/integrations', integrationsRouter);
+  api.use('/repo-scans', repoScansRouter);
   app.use('/api/v1', api);
 
   app.use(notFoundHandler);

@@ -8,6 +8,10 @@ export class ApiRequestError extends Error {
     public status: number,
     public code: string,
     message: string,
+    /** Full error body. Some errors carry structured context beyond the
+     *  message — e.g. a DUPLICATE_CANDIDATE 409 carries the prior completion
+     *  the UI needs to render its warning. */
+    public body?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -25,7 +29,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = (body ?? {}) as Partial<ApiError>;
-    throw new ApiRequestError(res.status, err.code ?? 'UNKNOWN', err.error ?? res.statusText);
+    throw new ApiRequestError(
+      res.status,
+      err.code ?? 'UNKNOWN',
+      err.error ?? res.statusText,
+      (body ?? undefined) as Record<string, unknown> | undefined,
+    );
   }
   return body as T;
 }

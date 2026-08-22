@@ -34,6 +34,7 @@ export interface AssessmentLinkSummary {
   id: string;
   token: string;
   candidate_label: string | null;
+  candidate_email: string | null;
   status: LinkStatus;
   overall_score: number | null;
 }
@@ -68,6 +69,7 @@ export interface AssessmentDetailLink {
   id: string;
   token: string;
   candidate_label: string | null;
+  candidate_email: string | null;
   expires_at: string;
   status: LinkStatus;
   session?: {
@@ -93,7 +95,26 @@ export interface AssessmentDetail {
 // ── POST /assessments/:id/links ──────────────────────────────────────────────
 export interface CreateLinkRequest {
   candidate_label?: string;
+  /** When set, the link is emailed here and duplicate detection keys on it. */
+  candidate_email?: string;
   expires_in_hours?: number;
+  /**
+   * Set true to create the link anyway after a DUPLICATE_CANDIDATE 409. The
+   * check is deliberately not a separate endpoint — a pre-check could go stale
+   * between the check and the create.
+   */
+  confirm_duplicate?: boolean;
+}
+
+/** Whether the invite email actually went out. Never silently assumed sent. */
+export type InviteEmailStatus = 'sent' | 'skipped_no_email' | 'skipped_not_configured' | 'failed';
+
+/** Returned in a 409 body when this email already completed this assessment. */
+export interface DuplicateCandidate {
+  candidate_email: string;
+  candidate_label: string | null;
+  completed_at: string;
+  overall_score: number | null;
 }
 
 // ── PATCH /assessments/:id/links/:linkId ─────────────────────────────────────
@@ -109,4 +130,8 @@ export interface CreateLinkResponse {
   expires_at: string;
   /** Echoes what the link was actually named — may be a generated default. */
   candidate_label: string | null;
+  candidate_email: string | null;
+  email_status: InviteEmailStatus;
+  /** Present when email_status is 'failed' — shown to the manager verbatim. */
+  email_error?: string;
 }
