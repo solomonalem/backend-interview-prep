@@ -78,12 +78,14 @@ assessiq/
 
 ---
 
-## Current status — v1.0.0 TAGGED ✅
+## Current status — v1.1.0 TAGGED ✅
 
-`v1.0.0` is an annotated tag on `main`. `main` and `develop` are in sync at that
-point. It is the first complete two-sided release: an interviewer can go from a
-job description to a scored report without manual intervention, and a job seeker
-can study the same bank.
+`v1.1.0` is an annotated tag on `main`. `main` and `develop` are in sync at that
+point (identical trees — `main` shows more commits only because merge commits
+accumulate there). v1.0.0 was the first complete two-sided release: an
+interviewer can go from a job description to a scored report without manual
+intervention, and a job seeker can study the same bank. **v1.1.0 adds repo
+grounding**, below.
 
 ### Interviewer flow (Hire mode)
 - **Auth** — email+password (scrypt) + Google OAuth exchange, JWT in an httpOnly
@@ -124,6 +126,23 @@ can study the same bank.
   session totals and verdict re-derived into a separate `overall.override` block.
   `PUT`/`DELETE /reports/session/:id/questions/:qid/override`.
 
+### Repo grounding (v1.1.0 — the repo-grounding epic, complete)
+An interviewer connects a GitHub repository and gets questions grounded in
+their team's own code. A **GitHub App** with `contents: read` and nothing else,
+so the manager picks repositories on github.com and GitHub itself enforces what
+we can see; no long-lived credential is held — installation tokens are minted
+per operation and expire in an hour. The scan is **layered**: manifest-based
+stack detection and path-signal file ranking (capped at 40 files) involve no AI
+at all, and Claude sees only that selection. It produces **findings** carrying
+at most a 3-line excerpt — **the source itself is never stored**, and in
+**strict mode** the model reads structural summaries only and no excerpt is
+kept at all. Findings feed the **existing** draft → review → vetted pipeline,
+so every grounded question still needs human approval before it can reach an
+assessment. **Candidates never see repository information** — no file path, repo
+name, or finding text; their payload stays the structural `{id, text, topic}`.
+Revocation is handled from both directions (webhook, and refusal on next use).
+Design: `docs/DESIGN_REPO_GROUNDING.md`; setup: `docs/github-app-setup.md`.
+
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
 AI tagging, and JD decode — all on the same question bank, using only the
@@ -135,17 +154,18 @@ AI tagging, and JD decode — all on the same question bank, using only the
 | Rubric scoring | `claude-sonnet-4-6` @ temp 0 | determinism required by docs/04 |
 | Question + rubric generation | `claude-sonnet-4-6` @ temp 0.7 | judgement task; variety wanted |
 | JD decode, story tagging | `claude-haiku-4-5` | cheap peripheral work |
+| Per-file repo analysis | `claude-haiku-4-5` | many small calls over a file selection |
+| Findings synthesis | `claude-sonnet-4-6` @ temp 0 | judgement across the whole scan |
 
 All overridable via `SCORING_MODEL` / `GENERATION_MODEL` / `DECODE_MODEL` /
-`TAGGING_MODEL`. No `ANTHROPIC_API_KEY` → scoring falls back to a dev stub and
+`TAGGING_MODEL` / `ANALYSIS_MODEL` / `SYNTHESIS_MODEL`. No `ANTHROPIC_API_KEY` → scoring falls back to a dev stub and
 decode to a keyword heuristic (both self-identify via `source`); generation has
 no stub and fails loudly, because a fabricated rubric is indistinguishable from
 a real one.
 
-**Not in v1.0.0:** PDF export (Puppeteer → R2; the `pdf_url`/`pdf_status` columns
+**Not in v1.1.0:** PDF export (Puppeteer → R2; the `pdf_url`/`pdf_status` columns
 exist), team accounts, analytics, automated tests, and production deploy/auth
-hardening. (The "reuse questions I've sent before" view and score override
-landed after the tag — see the two bullets above.)
+hardening — all unchanged deliberate exclusions from v1.0.0.
 
 ---
 
@@ -218,6 +238,12 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
   with `SCORING_MODEL`. If moving to a newer model, drop `temperature`. **No `ANTHROPIC_API_KEY`
   locally** → the worker uses a deterministic dev stub (`model_used: 'stub-dev'`); set a real key
   to score for real. Verify model ids against the `claude-api` skill.
+- **No assistant prefill on Sonnet 4.6+.** Seeding a reply with an opening `{` to force
+  JSON returns a 400 ("This model does not support assistant message prefill") on the
+  scoring/generation/synthesis models; Haiku 4.5 still accepts it, so a pipeline mixing
+  the two fails only at the Sonnet stage. `analysis.service`'s `call()` instead extracts
+  the first balanced `{...}` from the reply and, on prose, restates the contract and asks
+  once more. Don't reintroduce prefill.
 - **Prisma quirks:** `BehaviorEvent.timestamp` is `BigInt` — convert with `Number(...)`
   before sending to the frontend. `Score.total_pct` is stored, not computed at query time.
 - **Candidates are NOT Users.** They have no account row; they exist only as
@@ -228,24 +254,39 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ---
 
-## Next steps — post-v1.0.0
+## Next wave — post-v1.1.0
 
-Nothing is half-finished; these are the deliberate v1 exclusions, roughly in
-value order.
+**The plan is `docs/BLUEPRINT_POST_EPIC.md`** — read it before building any of
+it. Two features, sequenced: **A. document-grounded generation** (a middle
+grounding tier for companies that will never grant repo access, with an
+elicitation loop when the document is too thin) then **B. automated follow-up
+probes** (defend your own answer under a short timer; the delta between answer
+and defense is the signal). Build specs: `docs/BUILD_DOCUMENT_GROUNDING.md` and
+`docs/BUILD_FOLLOWUP_PROBES.md`. Sections C/D/E of the blueprint are designs
+only — deliberately not built.
 
-1. **Automated tests.** There are still none — Phase 0 was manual by design
+### Follow-ups and deliberate exclusions
+
+Nothing is half-finished; these are known gaps, roughly in value order.
+
+1. **Tune the synthesis prompt for findings-kind spread.** Verified the risk
+   skew is the prompt, not the repo: 75% / 67% risk across two unrelated
+   repositories, with no other kind exceeding a single finding. Address before
+   or during Feature A — the generation disposition it inherits should prefer a
+   spread of question angles over gotcha-hunting.
+2. **Automated tests.** There are still none — Phase 0 was manual by design
    (`docs/10-mvp-scope.md`). The highest-value first targets are the scoring
    maths (`score-calc`, now including the override recompute), the pool
    thresholds in `generation.service`, the `_guide`-never-leaks guarantee, and
    the "an override never writes an AI score column" invariant.
-2. **PDF export** (Puppeteer → R2). Columns exist; Chromium download is skipped
+3. **PDF export** (Puppeteer → R2). Columns exist; Chromium download is skipped
    locally via `.npmrc` (`npx puppeteer browsers install chrome` to enable).
    Note it must render the override alongside the AI score, not instead of it.
-3. **Deploy + auth hardening** — Railway per `docs/06`, real Google OAuth
+4. **Deploy + auth hardening** — Railway per `docs/06`, real Google OAuth
    credentials, rate limiting.
-4. **Generation dedup.** Batched generation calls don't see each other's output,
+5. **Generation dedup.** Batched generation calls don't see each other's output,
    so one request can produce near-duplicate drafts (measured ~1 in 15).
-5. **Override reach.** Overrides are per-question only. A session-level "I
+6. **Override reach.** Overrides are per-question only. A session-level "I
    disagree with this verdict" and a filter for overridden reports are the
    obvious follow-ups; neither is needed for the human to have the final say.
 
