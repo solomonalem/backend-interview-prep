@@ -11,3 +11,4 @@ apps/api/prisma/*.db
 
 # Vite
 apps/web/dist/
+apps/web/.vite/
