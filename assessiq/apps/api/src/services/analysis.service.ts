@@ -316,6 +316,16 @@ You will get a stack profile and a list of observations with file citations.
 
 Produce 6-12 findings. Each must be something a senior engineer on this team would recognise as true of THIS system, and that a candidate could be asked to reason about. Merge related observations; drop anything trivial or generic.
 
+SPREAD — this matters as much as the individual findings. You are describing a
+system to someone who will build an interview from it, not filing a code review.
+Aim to cover at least THREE different kinds, and do not let any one kind exceed
+half the findings. In particular, resist the pull toward `risk`: a set that is
+mostly risks produces an interview of gotchas, which tests whether a candidate
+can spot a bug rather than whether they can reason about a system. What the
+system IS (stack, architecture, domain) and what it deliberately DOES (pattern)
+carry as much interview signal as what might break. Report a risk when the code
+genuinely shows one, not to fill the list.
+
 kind must be one of:
   stack        - what the system is built on, where that constrains design
   architecture - how the pieces fit and communicate
