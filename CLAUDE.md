@@ -143,6 +143,27 @@ name, or finding text; their payload stays the structural `{id, text, topic}`.
 Revocation is handled from both directions (webhook, and refusal on next use).
 Design: `docs/DESIGN_REPO_GROUNDING.md`; setup: `docs/github-app-setup.md`.
 
+### Document grounding (Feature A — built, PR open to `develop`)
+The middle grounding tier, for teams that will never grant repository access.
+The manager pastes text or uploads a **.pdf/.docx/.txt/.md** (2 MB, 50k chars);
+extraction returns **text, not questions** — it lands back in the editable box
+so a bad parse is something they can see and fix. A scanned PDF has no text
+layer and is rejected rather than OCR'd. Before generating, a **sufficiency
+gate** (one cheap `DECODE_MODEL` call) either clears the document or returns up
+to **3 concrete follow-up questions**; answering any of them appends to the
+grounding context, and the loop runs **at most once**. Skipping is allowed and
+the resulting drafts are labelled `may_be_generic`. The gate is **never
+stubbed** — a fabricated verdict would claim we read a document we never
+assessed, so a missing key is a 503. Generation reuses the existing queue and
+the existing draft → review → vetted pipeline. **Neutrality** is asked for at
+length in the prompt and then verified in code for the one leak checkable
+without guessing: the document title appearing verbatim in any field.
+Provenance splits the way the repo tier's does — the badge rides `source` (bank,
+builder), the document title lives on the interviewer-only draft shape and shows
+as "Grounded in: <title>" in the review panel. **Candidates see nothing of it**:
+their payload stays `{id, text, topic}`. Page: `/ground/document`. Build spec:
+`docs/BUILD_DOCUMENT_GROUNDING.md`.
+
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
 AI tagging, and JD decode — all on the same question bank, using only the
@@ -156,6 +177,7 @@ AI tagging, and JD decode — all on the same question bank, using only the
 | JD decode, story tagging | `claude-haiku-4-5` | cheap peripheral work |
 | Per-file repo analysis | `claude-haiku-4-5` | many small calls over a file selection |
 | Findings synthesis | `claude-sonnet-4-6` @ temp 0 | judgement across the whole scan |
+| Document sufficiency check | `claude-haiku-4-5` (`DECODE_MODEL`) | one cheap call in front of a textarea |
 
 All overridable via `SCORING_MODEL` / `GENERATION_MODEL` / `DECODE_MODEL` /
 `TAGGING_MODEL` / `ANALYSIS_MODEL` / `SYNTHESIS_MODEL`. No `ANTHROPIC_API_KEY` → scoring falls back to a dev stub and
@@ -257,38 +279,40 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 ## Next wave — post-v1.1.0
 
 **The plan is `docs/BLUEPRINT_POST_EPIC.md`** — read it before building any of
-it. Two features, sequenced: **A. document-grounded generation** (a middle
-grounding tier for companies that will never grant repo access, with an
-elicitation loop when the document is too thin) then **B. automated follow-up
-probes** (defend your own answer under a short timer; the delta between answer
-and defense is the signal). Build specs: `docs/BUILD_DOCUMENT_GROUNDING.md` and
-`docs/BUILD_FOLLOWUP_PROBES.md`. Sections C/D/E of the blueprint are designs
+it. Two features, sequenced. **A. document-grounded generation is BUILT** — see
+the status section above; it sits on `feat/document-grounding` with a PR open to
+`develop`. **B. automated follow-up probes** is next (defend your own answer
+under a short timer; the delta between answer and defense is the signal), spec
+in `docs/BUILD_FOLLOWUP_PROBES.md`. Sections C/D/E of the blueprint are designs
 only — deliberately not built.
 
 ### Follow-ups and deliberate exclusions
 
 Nothing is half-finished; these are known gaps, roughly in value order.
 
-1. **Tune the synthesis prompt for findings-kind spread.** Verified the risk
-   skew is the prompt, not the repo: 75% / 67% risk across two unrelated
-   repositories, with no other kind exceeding a single finding. Address before
-   or during Feature A — the generation disposition it inherits should prefer a
-   spread of question angles over gotcha-hunting.
-2. **Automated tests.** There are still none — Phase 0 was manual by design
+1. **Automated tests.** There are still none — Phase 0 was manual by design
    (`docs/10-mvp-scope.md`). The highest-value first targets are the scoring
    maths (`score-calc`, now including the override recompute), the pool
    thresholds in `generation.service`, the `_guide`-never-leaks guarantee, and
    the "an override never writes an AI score column" invariant.
-3. **PDF export** (Puppeteer → R2). Columns exist; Chromium download is skipped
+2. **PDF export** (Puppeteer → R2). Columns exist; Chromium download is skipped
    locally via `.npmrc` (`npx puppeteer browsers install chrome` to enable).
    Note it must render the override alongside the AI score, not instead of it.
-4. **Deploy + auth hardening** — Railway per `docs/06`, real Google OAuth
+3. **Deploy + auth hardening** — Railway per `docs/06`, real Google OAuth
    credentials, rate limiting.
-5. **Generation dedup.** Batched generation calls don't see each other's output,
+4. **Generation dedup.** Batched generation calls don't see each other's output,
    so one request can produce near-duplicate drafts (measured ~1 in 15).
-6. **Override reach.** Overrides are per-question only. A session-level "I
+5. **Override reach.** Overrides are per-question only. A session-level "I
    disagree with this verdict" and a filter for overridden reports are the
    obvious follow-ups; neither is needed for the human to have the final say.
+6. **The bank page shows only the first 100 questions.** `QuestionBankPage`
+   fetches `limit: 100` ordered oldest-first with no pagination control, so the
+   newest questions — including freshly generated grounded ones — are reachable
+   only through search. Pre-dates Feature A; noticed while testing it.
+
+Closed since v1.1.0: the synthesis-prompt risk skew (`56c6c50` — the prompt now
+asks for at least three finding kinds and caps any one at half the set; verified
+by a document-grounded run coming back rca / conceptual / design).
 
 ---
 
