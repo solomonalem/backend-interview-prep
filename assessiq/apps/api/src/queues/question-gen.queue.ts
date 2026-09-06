@@ -1,7 +1,11 @@
 import { Queue } from 'bullmq';
 import { redisConnection } from '../lib/redis.js';
 
-export interface QuestionGenJob {
+/** Questions from one scan finding. */
+export interface FindingGenJob {
+  /** Absent on jobs enqueued before document grounding existed; those are all
+   *  finding jobs, which is why this discriminant is optional. */
+  kind?: 'finding';
   findingId: string;
   ownerId: string;
   seniority: 'junior' | 'mid' | 'senior' | 'staff';
@@ -9,8 +13,20 @@ export interface QuestionGenJob {
   countPerFinding: number;
 }
 
+/** Questions from one manager-supplied document, `count` per job. */
+export interface DocumentGenJob {
+  kind: 'document';
+  documentId: string;
+  ownerId: string;
+  seniority: 'junior' | 'mid' | 'senior' | 'staff';
+  type?: string;
+  count: number;
+}
+
+export type QuestionGenJob = FindingGenJob | DocumentGenJob;
+
 /**
- * Grounded question generation, one job per finding.
+ * Grounded question generation, one job per unit of grounding.
  *
  * Previously this ran inline in the request, which meant a manager selecting
  * five findings watched a spinner for minutes and could not navigate away.
@@ -29,7 +45,8 @@ export const questionGenQueue = new Queue<QuestionGenJob>('question-gen', {
     backoff: { type: 'exponential', delay: 3000 },
     removeOnComplete: { count: 100 },
     // Kept longer than completed jobs: a failure is what the UI needs to
-    // report, and it is the only record that a finding was ever attempted.
+    // report, and it is the only record that a grounding source was ever
+    // attempted.
     removeOnFail: { count: 200 },
   },
 });

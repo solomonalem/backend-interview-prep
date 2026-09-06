@@ -261,6 +261,11 @@ export interface GenerateFromDocumentRequest {
   seniority: Difficulty;
   type?: QuestionType;
   count?: number;
+  /** True when the manager is generating despite a failed sufficiency check.
+   *  Sent by the client because the server would otherwise have to pay for the
+   *  same check twice; it only ever affects a label shown back to that same
+   *  manager, so there is nothing to gain by lying about it. */
+  sufficiency_unmet?: boolean;
 }
 
 export interface GenerateFromDocumentResponse {

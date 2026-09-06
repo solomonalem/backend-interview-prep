@@ -3,6 +3,7 @@ import type {
   ApproveQuestionRequest,
   Difficulty,
   DraftRubricRequest,
+  ElicitationAnswer,
   GenerateFromRepoRequest,
   GenerateFromRepoResponse,
   GroundedQuestionsResponse,
@@ -39,8 +40,14 @@ const DRAFT_SELECT = {
   senior_signal_display: true,
   trap_display: true,
   source: true,
-  // Provenance for the review panel: the manager judging a repo-grounded
-  // question needs to see what in their codebase motivated it.
+  // Provenance for the review panel: the manager judging a grounded question
+  // needs to see what motivated it — a finding in their codebase, or the
+  // document they supplied.
+  grounding_document: {
+    // elicitation_qa is selected only to derive `had_elicitation`; the answers
+    // themselves never leave the server on this shape.
+    select: { id: true, title: true, elicitation_qa: true },
+  },
   repo_finding: {
     select: {
       id: true,
@@ -56,12 +63,20 @@ const DRAFT_SELECT = {
 
 type DraftRow = Prisma.QuestionGetPayload<{ select: typeof DRAFT_SELECT }>;
 
-/** Flatten the joined finding into the shape the UI reads. */
+/** Flatten the joined provenance into the shape the UI reads. */
 function toDraft(row: DraftRow): QuestionDraft {
   const f = row.repo_finding;
-  const { repo_finding: _drop, ...rest } = row;
+  const d = row.grounding_document;
+  const { repo_finding: _drop, grounding_document: _drop2, ...rest } = row;
   return {
     ...(rest as unknown as QuestionDraft),
+    document_grounding: d
+      ? {
+          document_id: d.id,
+          document_title: d.title,
+          had_elicitation: d.elicitation_qa !== null,
+        }
+      : null,
     grounding: f
       ? {
           finding_id: f.id,
@@ -579,6 +594,212 @@ ${JSON_SHAPE}`;
     data: { used_in_questions: { push: created.map((q) => q.id) } },
   });
   return created;
+}
+
+// ── Document-grounded generation (Feature A) ─────────────────────────────────
+/**
+ * Questions written from a document the manager supplied.
+ *
+ * The middle grounding tier. A repo scan reads the code; topic generation reads
+ * nothing; this reads what the manager can actually hand over — an architecture
+ * note, a project description, a detailed JD. Everything downstream is
+ * deliberately identical to the other two: same rubric spec, same generator,
+ * same `status: draft`, same mandatory review. Grounding changes what a question
+ * is ABOUT; it earns no shortcut through approval.
+ */
+
+/**
+ * The document's own identity must not survive into a question.
+ *
+ * The prompt asks for this at length, and the prompt is the primary control —
+ * but a prompt is a request, and this one is asking the model to withhold the
+ * most salient thing in its context. So verify the one form of leak that can be
+ * checked without guessing: the document title appearing verbatim in a field.
+ *
+ * Deliberately narrow. A broader check — flagging every capitalised token from
+ * the document — would reject "Postgres" and "OAuth" along with the company
+ * name, and a neutrality guard that eats correct questions gets switched off.
+ */
+function leaksTitle(row: Record<string, string | null>, title: string): boolean {
+  const needle = title.trim().toLowerCase();
+  // Two-word minimum: a one-word title like "Payments" is a word a question is
+  // allowed to use, and matching on it would reject nearly everything.
+  if (needle.length < 6 || needle.split(/\s+/).length < 2) return false;
+  return Object.values(row).some((v) => typeof v === 'string' && v.toLowerCase().includes(needle));
+}
+
+/**
+ * Generate for ONE document, `count` questions in a single call. The unit of
+ * work a queue job performs.
+ *
+ * Throws on failure so the queue can retry it; nothing partial is persisted.
+ */
+export async function generateFromDocument(
+  input: {
+    documentId: string;
+    seniority: Difficulty;
+    type?: QuestionType;
+    count: number;
+  },
+  interviewerId: string,
+): Promise<QuestionDraft[]> {
+  const doc = await prisma.groundingDocument.findFirst({
+    where: { id: input.documentId, owner_id: interviewerId },
+  });
+  if (!doc) throw new AppError(404, 'DOCUMENT_NOT_FOUND', 'Document not found');
+
+  const count = Math.min(MAX_QUESTIONS_PER_CALL, Math.max(1, input.count));
+  const qa = (doc.elicitation_qa as unknown as ElicitationAnswer[] | null) ?? [];
+
+  const system = `You write technical interview questions and their scoring rubrics for a
+senior-engineering assessment platform. Return ONLY a JSON object, no prose, no markdown.
+
+${RUBRIC_SPEC}`;
+
+  const user = `Write ${count} interview question${count === 1 ? '' : 's'} grounded in a REAL document
+describing the hiring team's own system.
+
+--- DOCUMENT ---
+${doc.text}
+--- END DOCUMENT ---
+${
+  qa.length
+    ? `\nThe hiring manager filled in gaps the document left open:\n${qa
+        .map((a) => `Q: ${a.question}\nA: ${a.answer}`)
+        .join('\n\n')}\n`
+    : ''
+}
+Seniority: ${input.seniority}
+${input.type ? `Question type: ${input.type}` : 'Question type: choose whichever best suits the material'}
+
+Rules that matter here:
+- Ground each question in something the document ACTUALLY says. Ask the candidate
+  to REASON about a situation the document describes; do not ask them to recall a
+  definition, and do not invent constraints the document does not support.
+- Describe the situation in neutral, generic terms. NEVER name the company, the
+  product, a team, an internal codename, or anything else that identifies whose
+  system this is — the candidate must not be able to tell. "A service that
+  reconciles third-party payment events" — not "Acme's Stripe reconciler".
+- This applies to EVERY field, not just the question: the rubric must not carry
+  identifiers lifted from the document either — no service names, table names,
+  env var names, vendor names or internal jargon. Describe them by role instead
+  ("the shared signing secret", "the reconciliation job"). A rubric is read by
+  people; an identifier that survives into it leaks the source just as surely.
+- The question must stand on its own: a candidate who has never seen this
+  document must be able to answer it from the description you give.
+- Put the real tension in senior_signal — the tradeoff or failure mode the
+  document exposes is exactly what separates a senior answer here.
+
+SPREAD — when writing more than one question, vary the angle. What the system IS
+and what it deliberately DOES carry as much interview signal as what might break;
+a set of questions that are all "what goes wrong here" tests bug-spotting rather
+than reasoning.
+
+LENGTH — this matters as much as the content:
+- The scenario setup is AT MOST 3 sentences.
+- The whole "text" field must read in well under 600 characters. A candidate
+  facing a wall of text spends their time parsing it instead of thinking.
+- Say only what is needed to make the problem answerable. The depth of the
+  document belongs in the RUBRIC, not in the question — core_answer_guide and
+  senior_signal_guide are where detail earns its place.
+
+topic: a short technology or concept label for retrieval, e.g. "Idempotency",
+"OAuth", "Postgres". Not the document's title.
+
+Each question must be answerable in a few paragraphs of prose — no coding exercises.
+
+Return exactly:
+${JSON_SHAPE}`;
+
+  const parsed = await callGenerator(system, user);
+  const candidates = (parsed.questions ?? [])
+    // The model picks the topic, as with findings: a document has no single
+    // topic of its own, so a label the model derives is the best available.
+    .map((raw) =>
+      validate(
+        { ...raw, topic: raw.topic?.trim() || 'General' },
+        { topic: raw.topic?.trim() || 'General', seniority: input.seniority },
+      ),
+    )
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  const rows = candidates.filter((r) => !leaksTitle(r, doc.title)).slice(0, count);
+  if (rows.length < candidates.length) {
+    // Worth a line in the log: a recurring leak means the prompt needs work,
+    // and this count is the only place that would ever show up.
+    console.error(
+      `[generate:document] dropped ${candidates.length - rows.length} draft(s) naming the document`,
+    );
+  }
+
+  if (!rows.length) {
+    throw new AppError(
+      502,
+      'GENERATION_FAILED',
+      "No question came back that was both complete and free of the document's own names.",
+    );
+  }
+
+  const created: QuestionDraft[] = [];
+  for (const row of rows) {
+    created.push(
+      toDraft(
+        await prisma.question.create({
+          data: {
+            ...row,
+            status: 'draft',
+            is_active: true,
+            created_by: interviewerId,
+            source: 'document_grounded',
+            grounding_document_id: doc.id,
+          },
+          select: DRAFT_SELECT,
+        }),
+      ),
+    );
+  }
+  return created;
+}
+
+/**
+ * Document-grounded questions belonging to this manager, split by review state.
+ *
+ * The mirror of listGroundedQuestions, and for the same reason: generation is
+ * queued, so the drafts ARE the notification and the review list has to read
+ * them from the server rather than from anything held in the browser.
+ * Optionally narrowed to one document.
+ */
+export async function listDocumentQuestions(
+  interviewerId: string,
+  documentId?: string,
+): Promise<GroundedQuestionsResponse> {
+  const where: Prisma.QuestionWhereInput = {
+    source: 'document_grounded',
+    is_active: true,
+    created_by: interviewerId,
+    ...(documentId ? { grounding_document_id: documentId } : {}),
+  };
+
+  const [draftRows, vettedRows] = await Promise.all([
+    prisma.question.findMany({
+      where: { ...where, status: 'draft' },
+      select: DRAFT_SELECT,
+      orderBy: { created_at: 'desc' },
+    }),
+    prisma.question.findMany({
+      where: { ...where, status: 'vetted' },
+      select: DRAFT_SELECT,
+      orderBy: { created_at: 'desc' },
+    }),
+  ]);
+
+  const drafts = draftRows.map(toDraft);
+  const vetted = vettedRows.map(toDraft);
+  return {
+    drafts,
+    vetted: vetted as unknown as GroundedQuestionsResponse['vetted'],
+    counts: { draft: drafts.length, vetted: vetted.length },
+  };
 }
 
 /**

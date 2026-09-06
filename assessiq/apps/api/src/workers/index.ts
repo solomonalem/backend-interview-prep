@@ -41,7 +41,11 @@ repoScanWorker.on('failed', (job, err) => {
 });
 
 questionGenWorker.on('completed', (job) => {
-  console.log(`[question-gen] job ${job.id} completed (finding ${job.data.findingId})`);
+  const source =
+    job.data.kind === 'document'
+      ? `document ${job.data.documentId}`
+      : `finding ${job.data.findingId}`;
+  console.log(`[question-gen] job ${job.id} completed (${source})`);
 });
 questionGenWorker.on('failed', (job, err) => {
   logErr('question-gen', `job ${job?.id}`, err);
