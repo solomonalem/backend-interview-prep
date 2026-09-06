@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ANALYSIS_MODEL, SYNTHESIS_MODEL, anthropic } from '../lib/claude.js';
+import { firstJsonObject } from '../lib/json-extract.js';
 import { AppError } from '../middleware/error.middleware.js';
 import type { SelectedFile, StackProfile } from '../lib/repo-inventory.js';
 
@@ -142,36 +143,6 @@ interface Called<T> {
 /** The model answered, but not with an object. Distinct from a transport
  *  failure because the remedy is different: ask again, differently. */
 class NotJson extends Error {}
-
-/**
- * The first balanced `{...}` in a reply, or null.
- *
- * Tolerates the two things models actually do around JSON — wrapping it in a
- * code fence and prefacing it with a sentence — without tolerating a reply
- * that is only prose. Brace counting is string-aware so a `{` inside a value
- * (a path, a regex in a snippet) cannot unbalance it.
- */
-function firstJsonObject(raw: string): string | null {
-  const start = raw.indexOf('{');
-  if (start === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < raw.length; i++) {
-    const c = raw[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (c === '\\') escaped = true;
-      else if (c === '"') inString = false;
-      continue;
-    }
-    if (c === '"') inString = true;
-    else if (c === '{') depth++;
-    else if (c === '}' && --depth === 0) return raw.slice(start, i + 1);
-  }
-  return null; // unterminated — truncation, not prose
-}
 
 /** One retry, transient failures only. Truncation is named rather than left to
  *  surface as unterminated JSON several frames later. */
@@ -315,6 +286,16 @@ const SYNTH_SYSTEM = `You turn observations about a codebase into findings an in
 You will get a stack profile and a list of observations with file citations.
 
 Produce 6-12 findings. Each must be something a senior engineer on this team would recognise as true of THIS system, and that a candidate could be asked to reason about. Merge related observations; drop anything trivial or generic.
+
+SPREAD — this matters as much as the individual findings. You are describing a
+system to someone who will build an interview from it, not filing a code review.
+Aim to cover at least THREE different kinds, and do not let any one kind exceed
+half the findings. In particular, resist the pull toward 'risk': a set that is
+mostly risks produces an interview of gotchas, which tests whether a candidate
+can spot a bug rather than whether they can reason about a system. What the
+system IS (stack, architecture, domain) and what it deliberately DOES (pattern)
+carry as much interview signal as what might break. Report a risk when the code
+genuinely shows one, not to fill the list.
 
 kind must be one of:
   stack        - what the system is built on, where that constrains design

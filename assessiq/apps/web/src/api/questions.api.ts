@@ -1,6 +1,11 @@
 import type {
   ApproveQuestionRequest,
+  DocumentCheckRequest,
+  DocumentCheckResponse,
+  DocumentExtractResponse,
   DraftRubricRequest,
+  GenerateFromDocumentRequest,
+  GenerateFromDocumentResponse,
   GenerateFromRepoRequest,
   GenerateFromRepoResponse,
   GroundedQuestionsResponse,
@@ -63,6 +68,29 @@ export const questionsApi = {
   grounded: (scanId?: string) =>
     api.get<GroundedQuestionsResponse>(
       `/questions/grounded${scanId ? `?scan_id=${scanId}` : ''}`,
+    ),
+
+  // ── Document grounding ─────────────────────────────────────────────────────
+  // Extraction returns TEXT, not questions: it lands back in the manager's
+  // editable box so they can see and fix it before anything is generated.
+  extractDocument: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.upload<DocumentExtractResponse>('/questions/document/extract', form);
+  },
+
+  // The sufficiency gate. Cheap, but it is a model call — one per deliberate
+  // click, never on keystroke.
+  checkDocument: (body: DocumentCheckRequest) =>
+    api.post<DocumentCheckResponse>('/questions/document/check', body),
+
+  // 202 — queued, not generated. Poll `documentGrounded` for the drafts.
+  generateFromDocument: (body: GenerateFromDocumentRequest) =>
+    api.post<GenerateFromDocumentResponse>('/questions/generate-from-document', body),
+
+  documentGrounded: (documentId?: string) =>
+    api.get<GroundedQuestionsResponse>(
+      `/questions/document-grounded${documentId ? `?document_id=${documentId}` : ''}`,
     ),
 
   // Manager writes the question, AI drafts its rubric. Same review flow.

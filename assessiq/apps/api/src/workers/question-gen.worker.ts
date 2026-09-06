@@ -1,11 +1,12 @@
 import { Worker } from 'bullmq';
 import { redisConnection } from '../lib/redis.js';
 import type { QuestionGenJob } from '../queues/question-gen.queue.js';
-import { generateForFinding } from '../services/generation.service.js';
+import { generateForFinding, generateFromDocument } from '../services/generation.service.js';
 import type { Difficulty, QuestionType } from '@assessiq/types';
 
 /**
- * One finding per job. Concurrency 2: enough that selecting several findings
+ * One grounding source per job — a scan finding, or a batch of questions from a
+ * supplied document. Concurrency 2: enough that selecting several findings
  * feels like progress rather than a queue, low enough not to hammer the Claude
  * rate limit alongside a scan that may be running at the same time.
  *
@@ -16,15 +17,28 @@ import type { Difficulty, QuestionType } from '@assessiq/types';
 export const questionGenWorker = new Worker<QuestionGenJob>(
   'question-gen',
   async (job) => {
-    const { findingId, ownerId, seniority, type, countPerFinding } = job.data;
+    const data = job.data;
+    if (data.kind === 'document') {
+      await generateFromDocument(
+        {
+          documentId: data.documentId,
+          seniority: data.seniority as Difficulty,
+          ...(data.type ? { type: data.type as QuestionType } : {}),
+          count: data.count,
+        },
+        data.ownerId,
+      );
+      return;
+    }
+
     await generateForFinding(
       {
-        findingId,
-        seniority: seniority as Difficulty,
-        ...(type ? { type: type as QuestionType } : {}),
-        countPerFinding,
+        findingId: data.findingId,
+        seniority: data.seniority as Difficulty,
+        ...(data.type ? { type: data.type as QuestionType } : {}),
+        countPerFinding: data.countPerFinding,
       },
-      ownerId,
+      data.ownerId,
     );
   },
   { connection: redisConnection, concurrency: 2 },

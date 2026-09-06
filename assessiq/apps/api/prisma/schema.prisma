@@ -22,6 +22,7 @@ model User {
   assessments   Assessment[]
   score_overrides Score[]     // scores this interviewer has overridden or flagged
   repo_integrations RepoIntegration[]
+  grounding_documents GroundingDocument[]
 
   @@map("users")
 }
@@ -59,6 +60,11 @@ model Question {
   repo_finding_id String?
   repo_finding    RepoFinding? @relation(fields: [repo_finding_id], references: [id], onDelete: SetNull)
 
+  // The document that motivated it. Same SetNull reasoning as the finding
+  // above: deleting the source document costs the citation, never the question.
+  grounding_document_id String?
+  grounding_document    GroundingDocument? @relation(fields: [grounding_document_id], references: [id], onDelete: SetNull)
+
   // Metadata
   is_active     Boolean       @default(true)
   // vetted = human-approved and safe to use as-is. draft = AI-generated and
@@ -87,6 +93,10 @@ enum QuestionSource {
   manual       // written by a human
   generated    // AI-written from a topic
   repo_grounded // AI-written from a finding about the manager's own codebase
+  // AI-written from a document the manager supplied (architecture note, project
+  // description, detailed JD). The middle grounding tier: weaker than a repo
+  // scan, which reads the code itself, but far better grounded than a topic.
+  document_grounded
 }
 
 enum Difficulty {
@@ -546,6 +556,38 @@ enum ScanStatus {
 // A derived observation about the repository. `detail` is prose written by the
 // analyser ABOUT the code — never the code itself. `excerpt` is the single
 // exception and is capped hard (§2.2): at most 3 lines, and empty in strict mode.
+/// A document the manager supplied to ground questions in — an architecture
+/// note, a project description, a detailed JD. Middle grounding tier: no repo
+/// access required.
+///
+/// Unlike repository source, storing this is correct rather than merely
+/// tolerable: the manager typed or uploaded it themselves, knowing it would be
+/// used to write questions. It is kept so a question's provenance stays
+/// answerable and so regeneration does not require re-uploading.
+///
+/// INTERVIEWER-ONLY, exactly like a finding. Nothing here reaches a candidate.
+model GroundingDocument {
+  id         String   @id @default(cuid())
+  owner_id   String
+  owner      User     @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+
+  title      String   // filename, or a title the manager typed
+  text       String   // the pasted or extracted text, as given
+
+  /// The elicitation round, when there was one: the gaps we asked about and
+  /// what the manager answered. Json rather than a table because it is read
+  /// as a unit, never queried across, and its shape is one round of Q&A.
+  /// Null means the document was sufficient on its own.
+  elicitation_qa Json?
+
+  questions  Question[]
+
+  created_at DateTime @default(now())
+
+  @@index([owner_id])
+  @@map("grounding_documents")
+}
+
 model RepoFinding {
   id           String      @id @default(cuid())
   scan_id      String

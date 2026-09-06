@@ -14,6 +14,7 @@ import {
   Scale,
   MessageSquareText,
   FileCode2,
+  FileText,
 } from 'lucide-react';
 import type { ApproveQuestionRequest, QuestionDraft } from '@assessiq/types';
 import { questionsApi } from '../api/questions.api';
@@ -300,6 +301,9 @@ export function QuestionReviewPanel({
                 <h3 className="font-semibold text-slate-800">Review before use</h3>
                 <Badge tone="amber">AI-generated</Badge>
                 {d.source === 'repo_grounded' && <Badge tone="emerald">Grounded in your code</Badge>}
+                {d.source === 'document_grounded' && (
+                  <Badge tone="sky">Grounded in your document</Badge>
+                )}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 <Badge tone="brand">{d.topic}</Badge>
@@ -344,6 +348,30 @@ export function QuestionReviewPanel({
               <p className="mt-2 text-[11px] text-emerald-800">
                 The candidate never sees any of this — not the repository, the file, or that the
                 question came from your code.
+              </p>
+            </section>
+          )}
+
+          {/* Same purpose for the document tier: which document motivated this,
+              so the manager can judge whether the question is fair about the
+              system they described. The document's TEXT is deliberately not
+              here — a reviewer needs to know the source, not re-read it. */}
+          {d.document_grounding && (
+            <section className="rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+                <FileText size={12} /> Grounded in a document you supplied
+              </p>
+              <p className="text-sm font-medium text-slate-800">
+                Grounded in: {d.document_grounding.document_title}
+              </p>
+              {d.document_grounding.had_elicitation && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Written with the follow-up answers you gave when the document came up thin.
+                </p>
+              )}
+              <p className="mt-2 text-[11px] text-sky-800">
+                The candidate never sees any of this — not the document, its title, or that the
+                question came from one.
               </p>
             </section>
           )}

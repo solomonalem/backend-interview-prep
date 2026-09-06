@@ -15,7 +15,7 @@ export const QUESTION_TYPES: QuestionType[] = [
 export type QuestionStatus = 'vetted' | 'draft';
 
 /** Where a question came from. Only meaningful for rows created from Slice 3 on. */
-export type QuestionSource = 'manual' | 'generated' | 'repo_grounded';
+export type QuestionSource = 'manual' | 'generated' | 'repo_grounded' | 'document_grounded';
 
 /**
  * Why a repo-grounded question exists: the finding it was written from, and
@@ -35,6 +35,23 @@ export interface QuestionGrounding {
   line_end: number | null;
 }
 
+/**
+ * Why a document-grounded question exists: the document it was written from.
+ *
+ * Deliberately just an id and a title. The document's TEXT is not carried here
+ * — a reviewer needs to know which document grounded the question, not to
+ * re-read it inline, and shipping the body into every list response would put
+ * the manager's whole architecture note on the wire for a provenance label.
+ *
+ * INTERVIEWER-ONLY, exactly like QuestionGrounding above.
+ */
+export interface DocumentGrounding {
+  document_id: string;
+  document_title: string;
+  /** True when the manager answered elicitation gaps before generating. */
+  had_elicitation: boolean;
+}
+
 // Public shape of a question — NEVER includes the private `_guide` rubric fields.
 export interface QuestionListItem {
   id: string;
@@ -51,6 +68,8 @@ export interface QuestionListItem {
   source: QuestionSource;
   /** Present only on repo_grounded questions, and only for interviewers. */
   grounding?: QuestionGrounding | null;
+  /** Present only on document_grounded questions, and only for interviewers. */
+  document_grounding?: DocumentGrounding | null;
 }
 
 export interface QuestionListResponse {
@@ -138,6 +157,8 @@ export interface QuestionDraft {
   /** Shown in the review panel so the manager can judge whether the question
    *  is fair and accurate about their own system. */
   grounding?: QuestionGrounding | null;
+  /** Same purpose, for the document tier. */
+  document_grounding?: DocumentGrounding | null;
 }
 
 /**
@@ -177,6 +198,83 @@ export interface GroundedQuestionsResponse {
   /** Approved and usable in an assessment. */
   vetted: QuestionListItem[];
   counts: { draft: number; vetted: number };
+}
+
+// ── Document grounding (Feature A) ───────────────────────────────────────────
+// The middle grounding tier: a document the manager supplies, for teams that
+// will never grant repo access. Everything downstream is unchanged — these
+// produce ordinary drafts that go through the same mandatory review.
+
+/** Upload caps. Named because both the client and the server enforce them, and
+ *  a silent mismatch between the two is a confusing rejection. */
+export const DOCUMENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+export const DOCUMENT_MAX_CHARS = 50_000;
+/** Below this, extraction is treated as having found nothing worth grounding —
+ *  the signature of a scanned PDF, which we reject rather than OCR. */
+export const DOCUMENT_MIN_CHARS = 200;
+
+/** POST /questions/document/extract — multipart upload of one .pdf/.docx/.txt/.md. */
+export interface DocumentExtractResponse {
+  /** The filename, offered as the document title; the manager can change it. */
+  title: string;
+  /** Extracted text, destined for the same editable textarea as a paste. */
+  text: string;
+  chars: number;
+  /** True when the text was truncated at DOCUMENT_MAX_CHARS. */
+  truncated: boolean;
+}
+
+/**
+ * POST /questions/document/check — the sufficiency gate before generating.
+ * One cheap call. Never stubbed: a fabricated verdict would send the manager
+ * into generation with a document we never actually assessed.
+ */
+export interface DocumentCheckRequest {
+  text: string;
+  /** How many questions the manager wants — thin text grounds few questions. */
+  count?: number;
+}
+
+export interface DocumentCheckResponse {
+  sufficient: boolean;
+  /** Up to 3 concrete follow-ups. Empty when sufficient. */
+  gaps: string[];
+}
+
+/** One elicitation answer. Both sides are kept: the answer is meaningless
+ *  without the question it answers. */
+export interface ElicitationAnswer {
+  question: string;
+  answer: string;
+}
+
+/**
+ * POST /questions/generate-from-document — 202, enqueued not performed.
+ * Mirrors GenerateFromRepoResponse: the drafts are the result, read back
+ * through GET /questions?source=document_grounded.
+ */
+export interface GenerateFromDocumentRequest {
+  title: string;
+  text: string;
+  /** Answers to the gaps, when the manager filled any in. Skipping is allowed. */
+  elicitation?: ElicitationAnswer[];
+  seniority: Difficulty;
+  type?: QuestionType;
+  count?: number;
+  /** True when the manager is generating despite a failed sufficiency check.
+   *  Sent by the client because the server would otherwise have to pay for the
+   *  same check twice; it only ever affects a label shown back to that same
+   *  manager, so there is nothing to gain by lying about it. */
+  sufficiency_unmet?: boolean;
+}
+
+export interface GenerateFromDocumentResponse {
+  document_id: string;
+  queued: number;
+  expected: number;
+  /** True when generation was forced past an unmet sufficiency check — the UI
+   *  labels the resulting drafts as possibly generic. */
+  may_be_generic: boolean;
 }
 
 export interface GenerateQuestionsRequest {
