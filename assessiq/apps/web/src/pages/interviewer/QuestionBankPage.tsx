@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, ChevronDown, Target, ShieldAlert, BookOpen, Library } from 'lucide-react';
+import {
+  Search,
+  ChevronDown,
+  Target,
+  ShieldAlert,
+  BookOpen,
+  Library,
+  FileCode2,
+  FileText,
+} from 'lucide-react';
 import type { Difficulty, QuestionListItem } from '@assessiq/types';
 import { DIFFICULTIES } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
@@ -102,6 +111,20 @@ export default function QuestionBankPage() {
                   className="w-full text-left px-5 py-4 flex items-start gap-4"
                 >
                   <div className="flex-1 min-w-0">
+                    {/* Where a question came from. The badge only says THAT it
+                        is grounded — the repository, file and document title
+                        live on the interviewer-only review shape, not on this
+                        public list. */}
+                    {q.source === 'repo_grounded' && (
+                      <p className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                        <FileCode2 size={11} /> Grounded in your codebase
+                      </p>
+                    )}
+                    {q.source === 'document_grounded' && (
+                      <p className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-sky-50 px-2.5 py-0.5 text-[11px] font-semibold text-sky-700 ring-1 ring-sky-200">
+                        <FileText size={11} /> Grounded in your document
+                      </p>
+                    )}
                     <p className="text-[15px] font-medium text-slate-800 leading-snug">{q.text}</p>
                     <div className="mt-2.5 flex flex-wrap gap-1.5">
                       <Badge tone="brand">{q.topic}</Badge>

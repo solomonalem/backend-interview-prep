@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Search,
   ArrowRight,
@@ -199,6 +199,10 @@ export default function AssessmentBuilderPage() {
   // codebase. Only appears when there are any — an empty card for a manager
   // with no integration is noise.
   const [grounded, setGrounded] = useState<QuestionListItem[]>([]);
+  // Fifth source: the document tier. Unlike the codebase card this one is
+  // always shown — it needs no integration, so an empty card is an invitation
+  // rather than a dead end.
+  const [fromDocs, setFromDocs] = useState<QuestionListItem[]>([]);
   const [loadingPrev, setLoadingPrev] = useState(true);
   const [prevError, setPrevError] = useState<string | null>(null);
   const [showAllPrev, setShowAllPrev] = useState(false);
@@ -248,6 +252,21 @@ export default function AssessmentBuilderPage() {
         ),
       )
       .catch(() => setGrounded([]));
+  }, []);
+
+  // Document-grounded questions. Same rule as the repo tier: vetted ones go
+  // straight to the tray, drafts still route through review.
+  useEffect(() => {
+    questionsApi
+      .list({ source: 'document_grounded', limit: 50 })
+      .then((r) =>
+        setFromDocs(
+          [...r.questions].sort((a, b) =>
+            a.status === b.status ? 0 : a.status === 'vetted' ? -1 : 1,
+          ),
+        ),
+      )
+      .catch(() => setFromDocs([]));
   }, []);
 
   // Reuse history. Independent of the position fields — it is the manager's own
@@ -417,6 +436,7 @@ export default function AssessmentBuilderPage() {
       results?.find((q) => q.id === id) ??
       previouslyUsed.find((q) => q.id === id) ??
       grounded.find((q) => q.id === id) ??
+      fromDocs.find((q) => q.id === id) ??
       tray.get(id);
     if (!found) return;
 
@@ -848,6 +868,53 @@ export default function AssessmentBuilderPage() {
               </CardBody>
             </Card>
           )}
+
+          {/* From a document — the middle grounding tier, for teams that will
+              never grant repository access. Always shown: it needs no
+              integration, so the empty state is the entry point rather than a
+              dead card. */}
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <FileText size={16} className="text-sky-600" /> Or use a question from a document
+              </h3>
+              <Link
+                to="/ground/document"
+                className="text-xs font-medium text-brand-600 hover:text-brand-700"
+              >
+                Generate from a document →
+              </Link>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <p className="text-xs text-slate-400">
+                Written from an architecture note, project description or detailed JD you supplied.
+                Candidates never see the document, its title, or that the question came from one.
+              </p>
+              {fromDocs.length === 0 ? (
+                <p className="text-xs text-slate-400">
+                  Nothing here yet —{' '}
+                  <Link to="/ground/document" className="font-medium text-brand-600 hover:text-brand-700">
+                    paste or upload a document
+                  </Link>{' '}
+                  and the questions it produces land here once you approve them.
+                </p>
+              ) : (
+                <fieldset
+                  disabled={busy}
+                  className={cn('grid items-start gap-2.5 2xl:grid-cols-2', busy && 'opacity-60')}
+                >
+                  {fromDocs.map((q) => (
+                    <QuestionCard
+                      key={q.id}
+                      question={q}
+                      selected={tray.has(q.id)}
+                      onToggle={toggleQuestion}
+                    />
+                  ))}
+                </fieldset>
+              )}
+            </CardBody>
+          </Card>
 
           {/* Previously used — the third source. Not a search and not a
               generation: it is this manager's own history, so it needs no
