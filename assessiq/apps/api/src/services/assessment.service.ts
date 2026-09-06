@@ -14,12 +14,26 @@ import type {
   ProctoringConfig,
   QuestionType,
 } from '@assessiq/types';
+import {
+  DEFAULT_PROBE_SECONDS,
+  DEFAULT_PROBES_MODE,
+  MAX_PROBE_SECONDS,
+  MIN_PROBE_SECONDS,
+} from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { generateToken } from '../utils/token.js';
 import { sendCandidateInvite } from './email.service.js';
 
 const DEFAULT_EXPIRES_HOURS = 168; // 7 days
+
+/** Clamped rather than rejected: the range exists because a defense should be a
+ *  reflex and not a second essay, and a manager who types 300 wants "longer",
+ *  not an error. */
+function clampProbeSeconds(seconds: number | undefined): number {
+  if (seconds === undefined) return DEFAULT_PROBE_SECONDS;
+  return Math.min(MAX_PROBE_SECONDS, Math.max(MIN_PROBE_SECONDS, Math.round(seconds)));
+}
 
 // A link's status is derived from its session (if started) and its expiry.
 type LinkWithSession = {
@@ -80,6 +94,12 @@ export async function createAssessment(
       timer_enabled: input.timer_enabled,
       timer_seconds: input.timer_enabled ? (input.timer_seconds ?? null) : null,
       confidence_rating_enabled: input.confidence_rating_enabled,
+      // The request wins; an omitted mode gets flagged_only, NOT the column
+      // default. The column default exists to leave pre-feature assessments
+      // alone, and inheriting it here would quietly turn the feature off for
+      // every new assessment that didn't mention it.
+      probes_mode: input.probes_mode ?? DEFAULT_PROBES_MODE,
+      probe_time_seconds: clampProbeSeconds(input.probe_time_seconds),
       ...(input.proctoring_config
         ? { proctoring_config: input.proctoring_config as unknown as Prisma.InputJsonValue }
         : {}),
@@ -95,6 +115,8 @@ export async function createAssessment(
     timer_enabled: assessment.timer_enabled,
     timer_seconds: assessment.timer_seconds,
     confidence_rating_enabled: assessment.confidence_rating_enabled,
+    probes_mode: assessment.probes_mode,
+    probe_time_seconds: assessment.probe_time_seconds,
     created_at: assessment.created_at.toISOString(),
   };
 }

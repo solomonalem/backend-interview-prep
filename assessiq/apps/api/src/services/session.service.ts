@@ -7,12 +7,20 @@ import type {
   StartSessionResponse,
   SubmitAnswerRequest,
   SubmitAnswerResponse,
+  SubmitProbeAnswerResponse,
   SubmitSessionResponse,
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { signCandidateToken } from '../lib/jwt.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { scoringQueue } from '../queues/scoring.queue.js';
+import {
+  createProbeForAnswer,
+  finalizeOpenProbes,
+  pasteSignalFor,
+  probeIsDue,
+  submitProbeAnswer,
+} from './probe.service.js';
 
 function proctoringEnabled(config: unknown): boolean {
   const pc = config as ProctoringConfig | null;
@@ -56,6 +64,10 @@ export async function validateLink(token: string): Promise<LinkValidateResponse>
       proctoring_enabled: proctoringEnabled(a.proctoring_config),
       confidence_rating_enabled: a.confidence_rating_enabled,
       company_name: a.owner.company,
+      // Disclosed here and nowhere later: the candidate learns that follow-ups
+      // exist BEFORE they agree to start, exactly as they do about proctoring.
+      probes_enabled: a.probes_mode !== 'off',
+      probe_time_seconds: a.probe_time_seconds,
     },
   };
 }
@@ -159,6 +171,8 @@ async function ensureActive(s: LoadedSession): Promise<void> {
       where: { id: s.id },
       data: { status: 'submitted', submitted_at: new Date(), auto_submitted: true },
     });
+    // A probe still on screen when the session clock ran out was not answered.
+    await finalizeOpenProbes(s.id);
     throw new AppError(400, 'SESSION_EXPIRED', 'Time is up — your assessment has been submitted');
   }
 }
@@ -217,6 +231,14 @@ export async function submitAnswer(
     throw new AppError(400, 'QUESTION_MISMATCH', 'question_id does not match this position');
   }
 
+  const mode = s.assessment.probes_mode;
+  // Only looked up when probes are on: with mode `off` this function must do
+  // exactly what it did before the feature existed, down to the query count.
+  const paste =
+    mode === 'off'
+      ? { detected: false, maxChars: null }
+      : await pasteSignalFor(sessionId, body.position);
+
   const answer = await prisma.answer.create({
     data: {
       session_id: sessionId,
@@ -226,11 +248,54 @@ export async function submitAnswer(
       confidence_rating: body.confidence_rating ?? null,
       time_spent_ms: body.time_spent_ms,
       scoring_status: 'pending',
+      // The report derives its own paste marks from the behaviour events; this
+      // records what the PROBE DECISION was made on, which is not the same
+      // thing once you are trying to explain why a follow-up did or didn't fire.
+      paste_detected: paste.detected,
+      paste_char_count: paste.maxChars,
     },
   });
 
+  let probe = null;
+  if (probeIsDue(mode, paste.detected)) {
+    // The rubric guides are needed to judge where "one level deeper" is, and
+    // they are private — fetched here rather than widened into the session's
+    // question select, which is the shape the candidate receives.
+    const guides = await prisma.question.findUnique({
+      where: { id: body.question_id },
+      select: {
+        text: true,
+        core_answer_guide: true,
+        senior_signal_guide: true,
+        trap_guide: true,
+      },
+    });
+    if (guides) {
+      probe = await createProbeForAnswer(
+        answer.id,
+        guides,
+        body.text,
+        s.assessment.probe_time_seconds,
+      );
+    }
+  }
+
   const next_position = body.position + 1 < total ? body.position + 1 : null;
-  return { answer_id: answer.id, next_position };
+  return { answer_id: answer.id, next_position, probe };
+}
+
+// ── POST /sessions/:id/probes/:probeId/answer ────────────────────────────────
+// The defense. Session guards are the same ones an answer goes through, so a
+// session that expires under a probe ends the way it always has — with "Time's
+// up" rather than a silent jump.
+export async function answerProbe(
+  sessionId: string,
+  probeId: string,
+  body: { text: string; time_spent_ms: number },
+): Promise<SubmitProbeAnswerResponse> {
+  const s = await loadSessionWithAssessment(sessionId);
+  await ensureActive(s);
+  return submitProbeAnswer(sessionId, probeId, body);
 }
 
 // ── POST /sessions/:id/events ────────────────────────────────────────────────
@@ -265,6 +330,10 @@ export async function submitSession(sessionId: string): Promise<SubmitSessionRes
       data: { status: 'submitted', submitted_at: new Date() },
     });
   }
+  // Before scoring, not after: the scorer reads a probe's status to decide
+  // whether there is a defense to score, and `generated` means "still on
+  // screen", which nothing is once the session is submitted.
+  await finalizeOpenProbes(sessionId);
   await enqueueScoring(sessionId);
   return { ok: true, message: 'Your assessment has been submitted. Thank you.' };
 }

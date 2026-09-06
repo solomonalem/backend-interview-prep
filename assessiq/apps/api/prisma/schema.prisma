@@ -132,6 +132,16 @@ model Assessment {
   // Features
   confidence_rating_enabled Boolean @default(true)
 
+  // Follow-up probes. The column default is `off` so every assessment that
+  // existed before this feature behaves exactly as it did; the API defaults a
+  // NEW assessment to `flagged_only` instead. The two defaults are deliberately
+  // different — one is about not changing the past, the other about what a
+  // manager should get when they don't express a preference.
+  probes_mode        ProbesMode @default(off)
+  // Seconds a candidate gets to defend one answer. 60-180, validated at the
+  // API; a defense is meant to be a reflex, not a second essay.
+  probe_time_seconds Int        @default(90)
+
   created_at  DateTime  @default(now())
   updated_at  DateTime  @updatedAt
 
@@ -140,6 +150,12 @@ model Assessment {
   sessions    Session[]
 
   @@map("assessments")
+}
+
+enum ProbesMode {
+  off          // no probes; byte-for-byte the pre-feature behavior
+  flagged_only // only where verification matters most (see probe.service)
+  all          // every answered question gets one
 }
 
 // Join table: Assessment ↔ Question (with ordering)
@@ -240,6 +256,7 @@ model Answer {
   submitted_at    DateTime  @default(now())
 
   score           Score?
+  probe           Probe?
 
   @@unique([session_id, question_id])
   @@index([session_id])
@@ -321,6 +338,53 @@ enum ConfidenceFlag {
   well_calibrated
   overconfident
   underconfident
+}
+
+// ─── FOLLOW-UP PROBES ────────────────────────────────────────────────────────
+// One optional follow-up per answer, generated from what the candidate actually
+// wrote and answered under a short timer. The signal is not the defense score
+// on its own — it is the DELTA between the answer and the defense, which is why
+// this hangs off Answer rather than standing alone.
+
+model Probe {
+  id          String  @id @default(cuid())
+  answer_id   String  @unique
+  answer      Answer  @relation(fields: [answer_id], references: [id], onDelete: Cascade)
+
+  // Null only on a generation_failed row: there is no probe text because the
+  // call never produced one. Storing the row anyway is deliberate — the report
+  // has to be able to say a follow-up was due and didn't happen, rather than
+  // silently looking like a question that was never probed.
+  text        String?
+  status      ProbeStatus @default(generated)
+
+  candidate_answer String?
+  time_spent_ms    Int?
+
+  // ── Defense scoring: a REDUCED rubric ──────────────────────────────────────
+  // Core and senior signal only. Trap and evidence do not apply to a 90-second
+  // defense of something you already wrote — asking for a worked example under
+  // that clock would measure typing speed.
+  defense_core_pct           Int?
+  defense_senior_signal_pct  Int?
+  defense_core_reasoning     String?
+  defense_senior_reasoning   String?
+  // core and senior re-weighted against each other (25/35 → 41.7/58.3), so
+  // senior signal stays the dominant term exactly as it is in a full score.
+  defense_pct                Int?
+  model_used                 String?
+  scored_at                  DateTime?
+
+  created_at  DateTime @default(now())
+
+  @@map("probes")
+}
+
+enum ProbeStatus {
+  generated         // shown to the candidate, not yet answered
+  answered          // they wrote something
+  unanswered        // the timer ran out on an empty box — a legitimate outcome
+  generation_failed // we could not produce one; never counted against anyone
 }
 
 // ─── BEHAVIOR EVENTS ─────────────────────────────────────────────────────────

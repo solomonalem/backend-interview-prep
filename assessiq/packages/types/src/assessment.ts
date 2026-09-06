@@ -10,6 +10,31 @@ export interface ProctoringConfig {
 
 export type LinkStatus = 'not_opened' | 'opened' | 'in_progress' | 'submitted' | 'expired';
 
+// ── Follow-up probes ─────────────────────────────────────────────────────────
+// After an answer, one follow-up written from the candidate's own words and
+// answered under a short timer. What the interviewer reads is not the defense
+// score but the DELTA against the answer it defends.
+
+/**
+ * `off`          — no probes at all; identical to the pre-feature behavior.
+ * `flagged_only` — only where verification matters most. See PROBE_MODE_NOTE:
+ *                  scoring is async, so at answer-submit time the paste flag is
+ *                  the only signal that exists.
+ * `all`          — every answered question gets one.
+ */
+export type ProbesMode = 'off' | 'flagged_only' | 'all';
+
+export const PROBES_MODES: ProbesMode[] = ['off', 'flagged_only', 'all'];
+
+/** What a manager should get when they express no preference. Deliberately not
+ *  the database column default, which is `off` so that assessments predating
+ *  the feature keep behaving exactly as they did. */
+export const DEFAULT_PROBES_MODE: ProbesMode = 'flagged_only';
+
+export const DEFAULT_PROBE_SECONDS = 90;
+export const MIN_PROBE_SECONDS = 60;
+export const MAX_PROBE_SECONDS = 180;
+
 // ── POST /assessments ────────────────────────────────────────────────────────
 export interface CreateAssessmentRequest {
   title: string;
@@ -18,6 +43,10 @@ export interface CreateAssessmentRequest {
   timer_seconds?: number;
   proctoring_config?: ProctoringConfig;
   confidence_rating_enabled: boolean;
+  /** Omitted → DEFAULT_PROBES_MODE, not the column default. */
+  probes_mode?: ProbesMode;
+  /** Omitted → DEFAULT_PROBE_SECONDS. Clamped to MIN/MAX at the API. */
+  probe_time_seconds?: number;
 }
 
 export interface CreateAssessmentResponse {
@@ -26,6 +55,8 @@ export interface CreateAssessmentResponse {
   timer_enabled: boolean;
   timer_seconds: number | null;
   confidence_rating_enabled: boolean;
+  probes_mode: ProbesMode;
+  probe_time_seconds: number;
   created_at: string;
 }
 
