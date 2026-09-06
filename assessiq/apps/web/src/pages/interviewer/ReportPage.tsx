@@ -13,8 +13,14 @@ import {
   Gauge,
   FileText,
   UserCheck,
+  MessageCircleQuestion,
 } from 'lucide-react';
-import type { ReportScore, ReportView, SetScoreOverrideRequest } from '@assessiq/types';
+import type {
+  ReportProbe,
+  ReportScore,
+  ReportView,
+  SetScoreOverrideRequest,
+} from '@assessiq/types';
 import {
   Badge,
   Button,
@@ -38,6 +44,120 @@ import {
 import { reportsApi } from '../../api/reports.api';
 import { ApiRequestError } from '../../api/client';
 import { cn } from '../../lib/cn';
+
+// What the delta bands are called on screen. The band names what happened to
+// the defense and stops there: the report is context for a hiring decision, not
+// a verdict about the person, and a label that reached for a cause would be
+// asserting something the number cannot support.
+const probeFlagMeta: Record<
+  NonNullable<ReportProbe['flag']>,
+  { label: string; ring: string; text: string; bg: string }
+> = {
+  defended: {
+    label: 'Defended their answer',
+    ring: 'ring-emerald-200',
+    text: 'text-emerald-700',
+    bg: 'bg-emerald-50',
+  },
+  partially_defended: {
+    label: 'Partially defended',
+    ring: 'ring-amber-200',
+    text: 'text-amber-700',
+    bg: 'bg-amber-50',
+  },
+  not_defended: {
+    label: 'Could not defend',
+    ring: 'ring-rose-200',
+    text: 'text-rose-700',
+    bg: 'bg-rose-50',
+  },
+};
+
+/**
+ * The follow-up, its answer, and the distance between the two.
+ *
+ * Presentation rule: everything here is what happened, and nothing here is what
+ * it means. A large gap between an answer and its defense is a fact worth
+ * putting in front of an interviewer and worth nothing at all as an automated
+ * conclusion — so the block shows both numbers, names the band, and leaves the
+ * reading to the person who will do the hiring.
+ */
+function ProbeBlock({ probe, answerTotal }: { probe: ReportProbe; answerTotal: number | null }) {
+  // Nothing was ever asked. Said plainly and neutrally: this is our failure,
+  // and a candidate must never be read as having dodged a question they were
+  // not given.
+  if (probe.status === 'generation_failed') {
+    return (
+      <p className="rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs text-slate-500">
+        A follow-up couldn't be generated for this answer.
+      </p>
+    );
+  }
+
+  const meta = probe.flag ? probeFlagMeta[probe.flag] : null;
+
+  return (
+    <div className="rounded-lg border border-sky-200 bg-sky-50/40 p-3.5">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">
+          <MessageCircleQuestion size={13} /> Follow-up
+        </p>
+        {meta && (
+          <span
+            className={cn(
+              'inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1',
+              meta.bg,
+              meta.text,
+              meta.ring,
+            )}
+          >
+            {meta.label}
+          </span>
+        )}
+      </div>
+
+      <p className="text-sm font-medium text-slate-800">{probe.text}</p>
+
+      <div className="mt-2.5 rounded-md bg-white/70 px-3 py-2.5">
+        {probe.status === 'unanswered' || !probe.candidate_answer ? (
+          <p className="text-sm italic text-slate-400">
+            No response was given in the time allowed.
+          </p>
+        ) : (
+          <p className="max-w-[95ch] whitespace-pre-wrap text-sm leading-relaxed text-slate-600">
+            {probe.candidate_answer}
+          </p>
+        )}
+      </div>
+
+      {probe.defense_pct !== null && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+          {answerTotal !== null && (
+            <span>
+              Answer <span className="font-semibold tabular text-slate-700">{answerTotal}%</span>
+            </span>
+          )}
+          <span>
+            Follow-up{' '}
+            <span className="font-semibold tabular text-slate-700">{probe.defense_pct}%</span>
+          </span>
+          {probe.delta !== null && (
+            <span>
+              Difference{' '}
+              <span className="font-semibold tabular text-slate-700">
+                {probe.delta > 0 ? '−' : probe.delta < 0 ? '+' : ''}
+                {Math.abs(probe.delta)}
+              </span>
+            </span>
+          )}
+          <span className="text-slate-400">
+            scored on core and senior signal only — a timed reply isn't asked for worked examples
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const confidenceMeta: Record<string, { tone: 'emerald' | 'rose' | 'sky'; label: string }> = {
   well_calibrated: { tone: 'emerald', label: 'Well calibrated' },
@@ -428,12 +548,27 @@ export default function ReportPage() {
                   </div>
                 ) : (
                   <div className="rounded-lg bg-slate-50 p-3.5">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Answer</p>
+                    <div className="mb-1 flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Answer</p>
+                      {/* On the question rather than only in the session totals:
+                          a paste count at the top of the report tells you it
+                          happened, not where. */}
+                      {q.answer.paste_detected && (
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
+                          <ClipboardPaste size={11} /> Pasted into this answer
+                        </span>
+                      )}
+                    </div>
                     <p className="max-w-[95ch] text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
                       {q.answer.text || <span className="italic text-slate-400">No answer provided</span>}
                     </p>
                   </div>
                 )}
+
+                {/* Directly under the answer and its paste mark — the three
+                    belong together, and reading them apart is what turns
+                    context into a guess. */}
+                {q.probe && <ProbeBlock probe={q.probe} answerTotal={s?.total_pct ?? null} />}
 
                 {s && (
                   <>

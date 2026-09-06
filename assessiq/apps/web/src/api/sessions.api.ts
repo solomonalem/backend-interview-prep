@@ -1,5 +1,7 @@
 import type {
   BehaviorEventInput,
+  SubmitProbeAnswerRequest,
+  SubmitProbeAnswerResponse,
   LinkValidateResponse,
   QuestionViewResponse,
   StartSessionResponse,
@@ -23,6 +25,18 @@ export const sessionsApi = {
     ),
   submitAnswer: (sessionId: string, body: SubmitAnswerRequest, sessionToken: string) =>
     api.post<SubmitAnswerResponse>(`/sessions/${sessionId}/answers`, body, bearer(sessionToken)),
+  // The defense. An empty body is expected at auto-submit and is not an error.
+  answerProbe: (
+    sessionId: string,
+    probeId: string,
+    body: SubmitProbeAnswerRequest,
+    sessionToken: string,
+  ) =>
+    api.post<SubmitProbeAnswerResponse>(
+      `/sessions/${sessionId}/probes/${probeId}/answer`,
+      body,
+      bearer(sessionToken),
+    ),
   sendEvents: (sessionId: string, events: BehaviorEventInput[], sessionToken: string) =>
     api.post<null>(`/sessions/${sessionId}/events`, { events }, bearer(sessionToken)),
   submit: (sessionId: string, sessionToken: string) =>

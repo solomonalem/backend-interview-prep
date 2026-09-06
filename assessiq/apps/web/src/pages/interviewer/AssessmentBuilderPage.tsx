@@ -15,6 +15,7 @@ import {
   PenLine,
   History,
   FileCode2,
+  MessageCircleQuestion,
 } from 'lucide-react';
 import type {
   CreateAssessmentRequest,
@@ -23,10 +24,19 @@ import type {
   PreviouslyUsedQuestion,
   QuestionDraft,
   QuestionListItem,
+  ProbesMode,
   QuestionMatchItem,
   QuestionType,
 } from '@assessiq/types';
-import { DIFFICULTIES, QUESTION_TYPES, supportedRolePresets } from '@assessiq/types';
+import {
+  DEFAULT_PROBE_SECONDS,
+  DEFAULT_PROBES_MODE,
+  DIFFICULTIES,
+  MAX_PROBE_SECONDS,
+  MIN_PROBE_SECONDS,
+  QUESTION_TYPES,
+  supportedRolePresets,
+} from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
 import { assessmentsApi } from '../../api/assessments.api';
 import { studyApi } from '../../api/study.api';
@@ -49,6 +59,26 @@ import {
   EmptyState,
 } from '../../components/ui';
 import { cn } from '../../lib/cn';
+
+const PROBE_MODE_COPY: { value: ProbesMode; label: string; blurb: string }[] = [
+  {
+    value: 'flagged_only',
+    label: 'Only where it matters',
+    blurb:
+      'A follow-up fires on an answer that was pasted in. Most candidates never see one; the ones who do are the ones worth a second look.',
+  },
+  {
+    value: 'all',
+    label: 'Every question',
+    blurb:
+      'One follow-up after every answer. The most signal, and the longest assessment — budget the extra time per question.',
+  },
+  {
+    value: 'off',
+    label: 'No follow-ups',
+    blurb: 'Answers are submitted and the assessment moves on, with nothing added.',
+  },
+];
 
 // Inline rounded switch — matches the SaaS light theme.
 function Toggle({
@@ -225,6 +255,8 @@ export default function AssessmentBuilderPage() {
   const [detectIdle, setDetectIdle] = useState(false);
   const [flagThreshold, setFlagThreshold] = useState(3);
   const [confidenceRating, setConfidenceRating] = useState(true);
+  const [probesMode, setProbesMode] = useState<ProbesMode>(DEFAULT_PROBES_MODE);
+  const [probeSeconds, setProbeSeconds] = useState(DEFAULT_PROBE_SECONDS);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -554,6 +586,8 @@ export default function AssessmentBuilderPage() {
         tab_switch_flag_threshold: flagThreshold,
       },
       confidence_rating_enabled: confidenceRating,
+      probes_mode: probesMode,
+      probe_time_seconds: probeSeconds,
     };
     try {
       const created = await assessmentsApi.create(body);
@@ -569,8 +603,12 @@ export default function AssessmentBuilderPage() {
     const q = `${tray.size} question${tray.size === 1 ? '' : 's'}`;
     const t = timerOn ? `${minutes}m timer` : 'no timer';
     const p = proctoringOn ? 'proctoring on' : 'proctoring off';
-    return `${q} · ${t} · ${p}`;
-  }, [tray.size, timerOn, minutes, proctoringOn]);
+    const f =
+      probesMode === 'off'
+        ? 'no follow-ups'
+        : `follow-ups ${probesMode === 'all' ? 'on every answer' : 'where flagged'} · ${probeSeconds}s`;
+    return `${q} · ${t} · ${p} · ${f}`;
+  }, [tray.size, timerOn, minutes, proctoringOn, probesMode, probeSeconds]);
 
   return (
     <>
@@ -1157,6 +1195,78 @@ export default function AssessmentBuilderPage() {
                   Flag a session after this many proctoring events.
                 </p>
               </div>
+            </CardBody>
+          </Card>
+
+          {/* Follow-ups. The three modes are spelled out rather than named,
+              because "flagged_only" tells a manager nothing about what their
+              candidate will actually experience. */}
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <MessageCircleQuestion size={16} className="text-brand-500" /> Follow-ups
+              </h3>
+            </CardHeader>
+            <CardBody className="space-y-3.5">
+              <p className="text-xs text-slate-400">
+                After an answer is submitted, the candidate can be asked one short question about
+                what they just wrote, on its own timer. What you read on the report is the
+                distance between the answer and the defense.
+              </p>
+              <div className="space-y-2">
+                {PROBE_MODE_COPY.map((m) => (
+                  <label
+                    key={m.value}
+                    className={cn(
+                      'flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 transition',
+                      probesMode === m.value
+                        ? 'border-brand-300 bg-brand-soft'
+                        : 'border-slate-200 hover:border-slate-300',
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="probes-mode"
+                      value={m.value}
+                      checked={probesMode === m.value}
+                      onChange={() => setProbesMode(m.value)}
+                      className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer border-slate-300 text-brand-600 focus:ring-brand-400"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-slate-800">{m.label}</span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                        {m.blurb}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {probesMode !== 'off' && (
+                <div className="animate-fade-in pt-1">
+                  <Label>Seconds to answer a follow-up</Label>
+                  <Input
+                    type="number"
+                    min={MIN_PROBE_SECONDS}
+                    max={MAX_PROBE_SECONDS}
+                    step={15}
+                    value={probeSeconds}
+                    onChange={(e) =>
+                      setProbeSeconds(
+                        Math.min(
+                          MAX_PROBE_SECONDS,
+                          Math.max(MIN_PROBE_SECONDS, Number(e.target.value) || DEFAULT_PROBE_SECONDS),
+                        ),
+                      )
+                    }
+                    className="tabular"
+                  />
+                  <p className="mt-1.5 text-xs text-slate-400">
+                    {MIN_PROBE_SECONDS}–{MAX_PROBE_SECONDS} seconds. Short on purpose: it should be
+                    long enough to say what you meant and too short to look it up. The candidate is
+                    told about follow-ups, and their length, before they start.
+                  </p>
+                </div>
+              )}
             </CardBody>
           </Card>
 

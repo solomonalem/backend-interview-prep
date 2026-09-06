@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowRight, Send, TimerOff } from 'lucide-react';
-import type { BehaviorEventInput, CandidateQuestion } from '@assessiq/types';
+import { ArrowRight, MessageCircleQuestion, Send, TimerOff } from 'lucide-react';
+import type { BehaviorEventInput, CandidateProbe, CandidateQuestion } from '@assessiq/types';
 import { Badge, Button, ProgressBar, Textarea, Spinner } from '../../components/ui';
 import { cn } from '../../lib/cn';
 import { sessionsApi } from '../../api/sessions.api';
@@ -32,15 +32,31 @@ export default function CandidateAssessmentPage() {
     s.expiresAt ? Math.max(0, new Date(s.expiresAt).getTime() - Date.now()) : null,
   );
 
+  // ── Follow-up probe ────────────────────────────────────────────────────────
+  // Set when a submitted answer comes back with one. While it is set, the probe
+  // screen replaces the question: there is no path forward around it, though
+  // leaving the box empty is a legitimate way through.
+  const [probe, setProbe] = useState<CandidateProbe | null>(null);
+  const [probeDraft, setProbeDraft] = useState('');
+  const [probeRemainingMs, setProbeRemainingMs] = useState(0);
+  const [probeSubmitting, setProbeSubmitting] = useState(false);
+
   // Refs for stable access inside listeners/timers.
   const positionRef = useRef(position);
   positionRef.current = position;
   const shownAt = useRef(Date.now());
+  const probeShownAt = useRef(0);
+  // Where to go once the probe is dealt with: the next position, or null for
+  // "that was the last question, finish".
+  const pendingNext = useRef<number | null>(null);
+  // Latest submitProbe, so the countdown effect (which must be declared above
+  // the early returns) can fire the same function the button does.
+  const submitProbeRef = useRef<(() => Promise<void>) | null>(null);
   const events = useRef<BehaviorEventInput[]>([]);
   const lastActivity = useRef(Date.now());
   const finished = useRef(false);
 
-  const { sessionId, sessionToken, total, confidenceEnabled, expiresAt } = s;
+  const { sessionId, sessionToken, total, confidenceEnabled, probesEnabled, expiresAt } = s;
 
   // No active session (e.g. page refresh) → back to the landing page.
   useEffect(() => {
@@ -128,6 +144,24 @@ export default function CandidateAssessmentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expiresAt, sessionId, sessionToken]);
 
+  // The probe's own clock, independent of the session timer above it. At zero
+  // it submits whatever is in the box — the same contract as the session timer,
+  // so nothing about expiry is a surprise the second time it happens.
+  useEffect(() => {
+    if (!probe) return;
+    const deadline = probeShownAt.current + probe.time_seconds * 1000;
+    setProbeRemainingMs(Math.max(0, deadline - Date.now()));
+    const id = setInterval(() => {
+      const rem = deadline - Date.now();
+      setProbeRemainingMs(Math.max(0, rem));
+      if (rem <= 0) {
+        clearInterval(id);
+        void submitProbeRef.current?.();
+      }
+    }, 250);
+    return () => clearInterval(id);
+  }, [probe]);
+
   // Blocking overlay: the assessment is over, so there is nothing useful the
   // candidate could do underneath it.
   if (timeUp) {
@@ -162,10 +196,45 @@ export default function CandidateAssessmentPage() {
   const low = remainingMs !== null && remainingMs <= 60_000;
   const isLast = position >= total - 1;
 
+  // The server closed the session under them. Same explanation as a
+  // client-side expiry rather than a silent jump — and now shared by the
+  // answer and the probe, so a session that dies during a follow-up ends
+  // exactly the way one that dies during an answer does.
+  const handleSessionClosed = (err: unknown): boolean => {
+    if (
+      err instanceof ApiRequestError &&
+      (err.code === 'SESSION_EXPIRED' || err.code === 'SESSION_CLOSED')
+    ) {
+      setTimeUp('done');
+      setTimeout(finish, 2500);
+      return true;
+    }
+    return false;
+  };
+
+  // Move to the next question, or finish. Extracted because the probe screen
+  // resumes the assessment at exactly the same point the answer would have.
+  const advance = async (next: number | null) => {
+    if (next === null) {
+      await sessionsApi.submit(sessionId, sessionToken);
+      finish();
+      return;
+    }
+    const q = await sessionsApi.getQuestion(sessionId, next, sessionToken);
+    setPosition(q.position);
+    setQuestion(q.question);
+    setDraft('');
+    setConfidence(null);
+    shownAt.current = Date.now();
+    lastActivity.current = Date.now();
+  };
+
   const submit = async () => {
     if (submitting) return;
     setSubmitting(true);
     setError(null);
+    // Before the answer, so the paste events for this question are on the
+    // server by the time it decides whether a follow-up is due.
     await flushEvents();
     try {
       const res = await sessionsApi.submitAnswer(
@@ -180,35 +249,156 @@ export default function CandidateAssessmentPage() {
         sessionToken,
       );
 
-      if (res.next_position === null) {
-        await sessionsApi.submit(sessionId, sessionToken);
-        finish();
+      // A follow-up came back: it goes BEFORE the next question, and the
+      // position we were heading to waits until it is dealt with.
+      if (res.probe) {
+        pendingNext.current = res.next_position;
+        probeShownAt.current = Date.now();
+        setProbeDraft('');
+        setProbe(res.probe);
+        setSubmitting(false);
+        lastActivity.current = Date.now();
         return;
       }
 
-      const next = await sessionsApi.getQuestion(sessionId, res.next_position, sessionToken);
-      setPosition(next.position);
-      setQuestion(next.question);
-      setDraft('');
-      setConfidence(null);
-      shownAt.current = Date.now();
-      lastActivity.current = Date.now();
+      await advance(res.next_position);
       setSubmitting(false);
     } catch (err) {
-      if (
-        err instanceof ApiRequestError &&
-        (err.code === 'SESSION_EXPIRED' || err.code === 'SESSION_CLOSED')
-      ) {
-        // The server closed the session while they were answering. Same
-        // explanation as a client-side expiry rather than a silent jump.
-        setTimeUp('done');
-        setTimeout(finish, 2500);
-        return;
-      }
+      if (handleSessionClosed(err)) return;
       setError(err instanceof ApiRequestError ? err.message : 'Could not submit your answer.');
       setSubmitting(false);
     }
   };
+
+  const submitProbe = async () => {
+    if (!probe || probeSubmitting) return;
+    setProbeSubmitting(true);
+    setError(null);
+    await flushEvents();
+    try {
+      await sessionsApi.answerProbe(
+        sessionId,
+        probe.id,
+        { text: probeDraft.trim(), time_spent_ms: Date.now() - probeShownAt.current },
+        sessionToken,
+      );
+    } catch (err) {
+      if (handleSessionClosed(err)) return;
+      // Deliberately swallowed. A follow-up we failed to record must not strand
+      // the candidate on a screen with no way forward — the assessment is the
+      // thing that matters, and the probe is left unanswered on our side.
+      console.error('[probe] could not record the follow-up answer');
+    }
+
+    const next = pendingNext.current;
+    pendingNext.current = null;
+    setProbe(null);
+    setProbeDraft('');
+    setProbeSubmitting(false);
+    try {
+      await advance(next);
+    } catch (err) {
+      if (handleSessionClosed(err)) return;
+      setError(err instanceof ApiRequestError ? err.message : 'Could not load the next question.');
+    }
+  };
+  // Read by the countdown effect above, which cannot see this closure directly.
+  submitProbeRef.current = submitProbe;
+
+  // ── The probe screen ───────────────────────────────────────────────────────
+  // Replaces the question rather than sitting beside it: there is no forward
+  // path around a follow-up. Leaving the box empty is the way through, and the
+  // screen says so — an unanswered follow-up is a recorded outcome, not a
+  // failure state, and a candidate who does not know that will burn their
+  // ninety seconds deciding whether they are allowed to move on.
+  if (probe) {
+    const probeLow = probeRemainingMs <= 15_000;
+    return (
+      <div className="flex-1 flex flex-col">
+        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
+          <div className="mx-auto w-full max-w-2xl px-6 py-3">
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-xs font-semibold text-slate-500 tabular">
+                Follow-up on question {position + 1}
+              </p>
+              {remainingMs !== null && (
+                <span className="font-mono tabular text-xs font-medium text-slate-400">
+                  {fmt(remainingMs)} left overall
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1 px-6 py-10">
+          <div className="mx-auto w-full max-w-2xl space-y-6">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-2 text-sky-700">
+                <MessageCircleQuestion size={18} />
+                <p className="text-sm font-semibold">One follow-up on your answer:</p>
+              </div>
+              <span
+                className={cn(
+                  'font-mono tabular text-lg font-bold leading-none',
+                  probeLow ? 'text-rose-600' : 'text-slate-700',
+                )}
+              >
+                {fmt(probeRemainingMs)}
+              </span>
+            </div>
+
+            <ProgressBar
+              value={(probeRemainingMs / (probe.time_seconds * 1000)) * 100}
+              tone={probeLow ? 'bg-rose-500' : 'bg-sky-500'}
+              className="h-1.5"
+            />
+
+            <h1 className="text-lg font-semibold leading-snug text-slate-800">{probe.text}</h1>
+
+            <Textarea
+              rows={6}
+              value={probeDraft}
+              onChange={(e) => {
+                setProbeDraft(e.target.value);
+                lastActivity.current = Date.now();
+              }}
+              onPaste={(e) => {
+                const text = e.clipboardData.getData('text');
+                if (text) pushEvent('paste', { char_count: text.length });
+                lastActivity.current = Date.now();
+              }}
+              placeholder="A couple of sentences is plenty…"
+              className="min-h-[10rem]"
+              autoFocus
+            />
+
+            <p className="text-xs text-slate-400">
+              This submits on its own when the timer reaches zero, with whatever you have written.
+              Leaving it blank is allowed.
+            </p>
+
+            {error && (
+              <p className="text-sm text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
+                {error}
+              </p>
+            )}
+
+            <div className="border-t border-slate-100 pt-6">
+              <Button size="lg" onClick={submitProbe} disabled={probeSubmitting} className="w-full">
+                {probeSubmitting ? (
+                  <Spinner className="border-white/40 border-t-white" />
+                ) : (
+                  <>
+                    Submit follow-up <ArrowRight size={18} />
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col">
@@ -317,6 +507,14 @@ export default function CandidateAssessmentPage() {
                 </>
               )}
             </Button>
+            {/* The pause after submit is where a follow-up gets written. Said
+                out loud because a few unexplained seconds on a timed assessment
+                reads as something having gone wrong. */}
+            {submitting && probesEnabled && (
+              <p className="mt-2.5 text-center text-xs text-slate-400">
+                Saving your answer — there may be a short follow-up before the next question.
+              </p>
+            )}
           </div>
         </div>
       </div>
