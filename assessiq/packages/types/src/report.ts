@@ -1,4 +1,5 @@
 import type { Difficulty } from './question.js';
+import type { SnippetLanguage } from './snippet.js';
 
 export interface ReportPending {
   status: 'scoring_in_progress';
@@ -90,7 +91,19 @@ export interface ReportProbe {
 export interface ReportQuestion {
   position: number;
   question: { id: string; text: string; topic: string; difficulty: Difficulty };
-  answer: { text: string; time_spent_ms: number; paste_detected: boolean } | null;
+  answer: {
+    text: string;
+    time_spent_ms: number;
+    paste_detected: boolean;
+    /**
+     * The code sketch the candidate attached, if any. Shown under the prose in
+     * the report and nowhere else. Never executed — it is displayed, quoted and
+     * read by a model, and that is the whole of what happens to it.
+     */
+    snippet_code: string | null;
+    /** null when nothing was attached; 'auto' when they left it undeclared. */
+    snippet_language: SnippetLanguage | null;
+  } | null;
   score: ReportScore | null;
   confidence_rating: number | null;
   confidence_flag: string | null;

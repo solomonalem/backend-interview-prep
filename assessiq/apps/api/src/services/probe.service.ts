@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { anthropic, PROBE_MODEL } from '../lib/claude.js';
 import { firstJsonObject } from '../lib/json-extract.js';
 import { AppError } from '../middleware/error.middleware.js';
+import { withoutSnippetMarker } from '../utils/snippet.js';
 
 /**
  * Follow-up probes: one question generated from what the candidate actually
@@ -34,6 +35,9 @@ no markdown.
 The follow-up must:
 1. QUOTE a specific phrase the candidate actually wrote, verbatim, in quotation marks. Not a
    paraphrase — the exact words. This is what makes it their follow-up and not a generic one.
+   If their answer includes a code sketch (marked by a line reading "[Candidate attached a code
+   sketch — <language>]"), a line or expression from that code is fair to quote and is often the
+   sharpest thing to ask about — what it does at an edge, what it assumes, what it costs.
 2. Push ONE level deeper on that phrase, or at an edge their own claim implies: what happens
    at the boundary, what breaks under concurrency or failure, what the tradeoff costs them.
 3. Be answerable in about 90 seconds of typing BY SOMEONE WHO UNDERSTOOD WHAT THEY WROTE.
@@ -43,6 +47,8 @@ Do not:
 - ask them to repeat or summarise what they already said
 - introduce a topic their answer never touched
 - ask more than one thing
+- ask them to write, fix or extend code — they are answering in prose, in a plain text box,
+  in about ninety seconds
 - comment on the quality of their answer, or hint at a judgement of it
 
 Write it in a neutral, curious register — a colleague asking a real question, not an examiner
@@ -113,8 +119,10 @@ async function generateProbeText(
 ): Promise<string | null> {
   if (!anthropic) return null;
   // Nothing to quote back. A probe on an empty box would have to be generic,
-  // which is exactly the thing this feature exists to avoid.
-  if (answerText.trim().length < 40) return null;
+  // which is exactly the thing this feature exists to avoid. A code sketch
+  // counts toward this — a quotable line of code is quotable — but the marker
+  // line that introduces it is ours, not theirs, so it does not.
+  if (withoutSnippetMarker(answerText).trim().length < 40) return null;
 
   const user = `The candidate was asked:
 ${question.text}
