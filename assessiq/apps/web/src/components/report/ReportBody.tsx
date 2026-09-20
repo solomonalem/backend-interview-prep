@@ -344,7 +344,11 @@ export function ReportBody({
           <UserCheck size={16} className="mt-0.5 shrink-0 text-violet-600" />
           <span>
             <span className="font-medium">
-              Showing your overrides: {ov.adjusted_count > 0 && `${ov.adjusted_count} score`}
+              {/* "your" is only true for the owner. A guest reading a shared
+                  link did not make these, and telling them they did is a small
+                  lie in the one banner whose whole job is transparency. */}
+              {readOnly ? 'Interviewer overrides applied: ' : 'Showing your overrides: '}
+              {ov.adjusted_count > 0 && `${ov.adjusted_count} score`}
               {ov.adjusted_count > 0 && ov.adjusted_count !== 1 && 's'}
               {ov.adjusted_count > 0 && ' corrected'}
               {ov.adjusted_count > 0 && ov.disagreed_count > 0 && ', '}

@@ -13,6 +13,20 @@ import {
   listReportShares,
   revokeReportShare,
 } from '../services/report-share.service.js';
+import {
+  renderReportPdf,
+  renderSharedReportPdf,
+  type RenderedReportPdf,
+} from '../services/report-pdf.service.js';
+
+// One way to put a PDF on the wire, used by both the owner's route and the
+// shared one, so the two cannot disagree about headers.
+function sendPdf(res: import('express').Response, out: RenderedReportPdf): void {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+  res.setHeader('Content-Length', out.pdf.length);
+  res.end(out.pdf);
+}
 
 export const reportsRouter = Router();
 
@@ -42,6 +56,28 @@ reportsRouter.get(
     if (!token) throw new AppError(400, 'VALIDATION', 'token is required');
     const { code, body } = await getSharedReport(token);
     res.status(code).json(body);
+  }),
+);
+
+// GET /reports/shared/:token/pdf — PUBLIC. The shared report as a document,
+// resolved by the same token path and therefore carrying the same omissions.
+reportsRouter.get(
+  '/shared/:token/pdf',
+  asyncHandler(async (req, res) => {
+    const { token } = req.params;
+    if (!token) throw new AppError(400, 'VALIDATION', 'token is required');
+    sendPdf(res, await renderSharedReportPdf(token));
+  }),
+);
+
+// GET /reports/session/:sessionId/pdf — the manager's export
+reportsRouter.get(
+  '/session/:sessionId/pdf',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) throw new AppError(400, 'VALIDATION', 'sessionId is required');
+    sendPdf(res, await renderReportPdf(req.interviewer!.id, sessionId));
   }),
 );
 

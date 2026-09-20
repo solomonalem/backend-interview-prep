@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Link2Off, Sparkles } from 'lucide-react';
+import { Download, Link2Off, Sparkles } from 'lucide-react';
 import type { ReportView } from '@assessiq/types';
 import { ReportBody } from '../components/report/ReportBody';
-import { Card, CardBody, EmptyState, Spinner } from '../components/ui';
+import { Button, Card, CardBody, EmptyState, Spinner } from '../components/ui';
 import { reportsApi } from '../api/reports.api';
 
 function fmtDate(iso: string | null): string {
@@ -34,6 +34,19 @@ export default function SharedReportPage() {
   const { token } = useParams();
   const [report, setReport] = useState<ReportView | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'pending' | 'gone'>('loading');
+  const [downloading, setDownloading] = useState(false);
+
+  const downloadPdf = async () => {
+    if (!token || downloading) return;
+    setDownloading(true);
+    try {
+      await reportsApi.downloadSharedPdf(token);
+    } catch {
+      // Nothing useful to offer a guest here beyond the page they already have.
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   useEffect(() => {
     if (!token) return;
@@ -90,6 +103,12 @@ export default function SharedReportPage() {
             Assess<span className="text-brand-600">IQ</span>
           </span>
           <span className="ml-auto text-xs text-slate-400">Shared report · read-only</span>
+          {state === 'ready' && (
+            <Button variant="secondary" size="sm" onClick={() => void downloadPdf()} disabled={downloading}>
+              {downloading ? <Spinner className="h-3 w-3" /> : <Download size={14} />}
+              {downloading ? 'Preparing…' : 'PDF'}
+            </Button>
+          )}
         </div>
       </header>
 

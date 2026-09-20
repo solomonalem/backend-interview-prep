@@ -33,6 +33,10 @@ export default function ReportPage() {
   // Part of the same flow as the candidate page's button — same dialog, same
   // endpoint, this candidate already chosen.
   const [sendingAnother, setSendingAnother] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  // Its own state: a failed export must not replace the report with an error
+  // card. The report loaded fine; it is the PDF that didn't.
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const [pending, setPending] = useState<{ scored: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,6 +83,23 @@ export default function ReportPage() {
   const removeOverride = async (questionId: string) => {
     if (!id) return;
     setReport(await reportsApi.clearOverride(id, questionId));
+  };
+
+  // Rendered on the server, which takes a second or two — said out loud rather
+  // than left as a button that appears to have done nothing.
+  const downloadPdf = async () => {
+    if (!id || downloading) return;
+    setDownloading(true);
+    setPdfError(null);
+    try {
+      await reportsApi.downloadPdf(id);
+    } catch (err) {
+      setPdfError(
+        err instanceof ApiRequestError ? err.message : 'Could not generate the PDF.',
+      );
+    } finally {
+      setDownloading(false);
+    }
   };
 
   if (loading && !pending) {
@@ -150,8 +171,13 @@ export default function ReportPage() {
                 <Send size={15} /> Send another assessment
               </Button>
             )}
-            <Button variant="secondary" disabled title="coming soon">
-              <Download size={16} /> Download PDF
+            <Button
+              variant="secondary"
+              onClick={() => void downloadPdf()}
+              disabled={downloading}
+            >
+              {downloading ? <Spinner className="h-3.5 w-3.5" /> : <Download size={16} />}
+              {downloading ? 'Preparing…' : 'Download PDF'}
             </Button>
           </div>
         }
@@ -163,6 +189,12 @@ export default function ReportPage() {
           onClose={() => setSendingAnother(false)}
         />
       )}
+      {pdfError && (
+        <p className="mb-4 rounded-lg border border-rose-100 bg-rose-50 px-3.5 py-2.5 text-sm text-rose-600">
+          {pdfError}
+        </p>
+      )}
+
       <ShareReportPanel sessionId={session.id} />
 
       <ReportBody

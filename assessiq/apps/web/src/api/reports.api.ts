@@ -35,4 +35,12 @@ export const reportsApi = {
    * token on its own path — it reaches exactly one report and nothing else.
    */
   getShared: (token: string) => api.get<ReportResponse>(`/reports/shared/${token}`),
+
+  // ── PDF export ─────────────────────────────────────────────────────────────
+  // Rendered server-side and streamed back; the browser only saves it.
+  downloadPdf: (sessionId: string) =>
+    api.download(`/reports/session/${sessionId}/pdf`, 'assessiq-report.pdf'),
+  /** The shared export — same document, minus what the shared view withholds. */
+  downloadSharedPdf: (token: string) =>
+    api.download(`/reports/shared/${token}/pdf`, 'assessiq-report.pdf'),
 };
