@@ -49,10 +49,14 @@ export function CodeSnippet({
   // no language at all.
   const label = language && language !== 'auto' ? snippetLanguageLabel(language) : 'Code';
 
+  // Dark, on a report that is otherwise a white document. Deliberate: code is
+  // read on a dark ground nearly everywhere else, the GitHub Dark tokens are
+  // tuned for exactly this background, and the change of surface marks where
+  // the candidate's own writing stops and our commentary about it starts.
   return (
-    <div className="overflow-hidden rounded-lg border border-slate-200">
-      <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
-        <p className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+    <div className="overflow-hidden rounded-lg border border-slate-700/60 shadow-sm">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-700/60 bg-slate-800 px-3 py-1.5">
+        <p className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
           <Code2 size={12} /> {label}
         </p>
         <p className="text-[11px] text-slate-400">attached by the candidate · not executed</p>
@@ -62,7 +66,7 @@ export function CodeSnippet({
       {/* Ligatures off: an interviewer is reading the characters the candidate
           actually typed, and a font that draws "=>" as a single arrow glyph
           quietly edits them. */}
-      <pre className="overflow-x-auto bg-white px-3.5 py-3 text-[13px] leading-relaxed [font-variant-ligatures:none]">
+      <pre className="overflow-x-auto bg-[#0d1117] px-3.5 py-3 text-[13px] leading-relaxed [font-variant-ligatures:none]">
         {result ? (
           // hljs escapes its own output, so this is the library's markup around
           // the candidate's text — not the candidate's markup.
@@ -71,11 +75,11 @@ export function CodeSnippet({
           // its own padding and background, which would fight this block's.
           // The token classes inside carry all the colour.
           <code
-            className="font-mono text-slate-800"
+            className="font-mono text-slate-200"
             dangerouslySetInnerHTML={{ __html: result.html }}
           />
         ) : (
-          <code className="font-mono text-slate-800">{code}</code>
+          <code className="font-mono text-slate-200">{code}</code>
         )}
       </pre>
     </div>

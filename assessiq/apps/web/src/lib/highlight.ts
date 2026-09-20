@@ -1,9 +1,10 @@
 import type { HLJSApi } from 'highlight.js';
 // The token colours. Imported here rather than in the app's global stylesheet
 // so it travels in this module's chunk — the theme arrives with the highlighter
-// or not at all. GitHub light: the report is a white document, and a dark code
-// theme in the middle of one reads as a different application.
-import 'highlight.js/styles/github.css';
+// or not at all. GitHub dark: code gets the surface it is read on everywhere
+// else, and the shift in ground is what separates what the candidate WROTE
+// from the report's own commentary about it.
+import 'highlight.js/styles/github-dark.css';
 import { SNIPPET_LANGUAGES, type SnippetLanguage } from '@assessiq/types';
 
 /**
