@@ -143,7 +143,7 @@ name, or finding text; their payload stays the structural `{id, text, topic}`.
 Revocation is handled from both directions (webhook, and refusal on next use).
 Design: `docs/DESIGN_REPO_GROUNDING.md`; setup: `docs/github-app-setup.md`.
 
-### Document grounding (Feature A — built, PR open to `develop`)
+### Document grounding (Feature A — merged to `develop`, PR #29)
 The middle grounding tier, for teams that will never grant repository access.
 The manager pastes text or uploads a **.pdf/.docx/.txt/.md** (2 MB, 50k chars);
 extraction returns **text, not questions** — it lands back in the editable box
@@ -164,7 +164,7 @@ as "Grounded in: <title>" in the review panel. **Candidates see nothing of it**:
 their payload stays `{id, text, topic}`. Page: `/ground/document`. Build spec:
 `docs/BUILD_DOCUMENT_GROUNDING.md`.
 
-### Follow-up probes (Feature B — built, PR open to `develop`)
+### Follow-up probes (Feature B — merged to `develop`, PR #30)
 The anti-assistance mechanic, and the reason it works without a human present:
 after an answer is submitted, the system can ask ONE follow-up **written from
 the candidate's own words** — quoting a phrase they wrote — answered under a
@@ -184,6 +184,31 @@ legitimate, scored outcome: `unanswered`, `defense_pct` 0, no model call.
 timer before the candidate starts, the same honesty rule as proctoring — and
 the report presents the delta as context, never a verdict. Build spec:
 `docs/BUILD_FOLLOWUP_PROBES.md`.
+
+### Code sketches (Feature D — built, PR open to `develop`)
+An optional **"Add code"** box under the answer textarea: the candidate sketches
+code to support their reasoning, picks a language or leaves it on **Auto**, and
+the sketch flows into scoring, probes, paste tracking and the report. **There is
+no execution environment of any kind** — no sandbox, no runtime, no test cases,
+and that is the recorded strategic boundary rather than a missing piece: running
+code is HackerRank's product, and what a sketch *reveals* is the scorer's job.
+Two nullable columns on `Answer` (`snippet_code`, `snippet_language`), a 5000-char
+cap and a 21-entry language list shared from `packages/types/src/snippet.ts`
+(client dropdown, server validation and report labels all read it). The prose and
+the sketch are composed into **one artifact** by `utils/snippet.ts`, so the
+scorer, the defense scorer and probe generation cannot disagree about what the
+candidate submitted — a probe can quote a line of their own code, which is the
+sharpest defense test available. The scoring prompt gains one instruction (judge
+what the code reveals, not style or whether it compiles; **never penalise its
+absence**) and **no rubric change** — a sketch is evidence, not a fifth
+component. The box records the **same paste event** as the answer box, so it is
+neither a hole in proctoring nor one in the `flagged_only` probe rule. The
+candidate side is a plain monospace textarea — no CodeMirror/Monaco, Tab indents
+two spaces — and highlighting happens **display-side only**, in the report,
+behind a dynamic `highlight.js` import that leaves the main bundle untouched.
+**Candidates see nothing new**: the question payload stays `{id, text, topic}`,
+and a sketch is only their own input echoed back. Build spec:
+`docs/BUILD_CODE_SNIPPET.md`.
 
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
@@ -301,13 +326,14 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ## Next wave — post-v1.1.0
 
-**The plan is `docs/BLUEPRINT_POST_EPIC.md`.** Both of its buildable features
-are now done: **A. document-grounded generation** (merged to `develop`, PR #29)
-and **B. automated follow-up probes** (on `feat/followup-probes`, PR open) —
-both described in the status section above. Sections C/D/E of the blueprint are
-designs only — deliberately not built, each with a stated trigger to revisit.
-With B merged there is no queued feature work; the follow-ups below are the
-list.
+**The plan is `docs/BLUEPRINT_POST_EPIC.md`.** All three of its buildable
+features are now done: **A. document-grounded generation** (merged, PR #29),
+**B. automated follow-up probes** (merged, PR #30) and **D. the code snippet
+field** (on `feat/code-snippet`, PR open) — all described in the status section
+above. Sections **C** (pricing/multi-tenancy) and **E** (live manager mode)
+remain designs only, deliberately not built, each with a stated trigger to
+revisit. With D merged there is no queued feature work; the follow-ups below
+are the list.
 
 ### Follow-ups and deliberate exclusions
 
@@ -344,6 +370,15 @@ Nothing is half-finished; these are known gaps, roughly in value order.
    fetches `limit: 100` ordered oldest-first with no pagination control, so the
    newest questions — including freshly generated grounded ones — are reachable
    only through search. Pre-dates Feature A; noticed while testing it.
+9. **An in-progress answer is not submitted when the timer expires.** At zero
+   the client submits the *session*, not the answer being typed, and the
+   server would refuse it anyway — `ensureActive` rejects any write past the
+   deadline. So a candidate mid-answer at expiry loses that answer, and now
+   its code sketch with it. Pre-dates the sketch field and is the same root as
+   (7): closing it means a server-side grace window for one final answer, which
+   has proctoring implications worth deciding deliberately rather than as part
+   of a feature. `docs/BUILD_CODE_SNIPPET.md` assumes an autosave/draft layer
+   that has never existed in this codebase.
 
 Closed since v1.1.0: the synthesis-prompt risk skew (`56c6c50` — the prompt now
 asks for at least three finding kinds and caps any one at half the set; verified
