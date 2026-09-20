@@ -121,8 +121,11 @@ export function SendAssessmentDialog({
           ) : duplicate ? (
             <div className="space-y-3">
               <p className="text-sm text-slate-700">
-                <strong>{duplicate.candidate_label ?? candidate.name}</strong> already completed
-                this assessment
+                {/* The record's name, not the old link's label. That label is
+                    often an auto-generated "Candidate 1", and naming a person
+                    that back at the manager who just picked them out of their
+                    own list reads as a different person entirely. */}
+                <strong>{candidate.name}</strong> already completed this assessment
                 {duplicate.overall_score !== null && (
                   <> and scored <strong>{duplicate.overall_score}%</strong></>
                 )}
