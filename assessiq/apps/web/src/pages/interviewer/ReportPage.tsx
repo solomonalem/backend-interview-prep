@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import {
   Download,
+  Send,
   ShieldCheck,
   MonitorSmartphone,
   EyeOff,
@@ -42,6 +43,7 @@ import {
   ScoreOverrideEditor,
 } from '../../components/ScoreOverride';
 import { CodeSnippet } from '../../components/report/CodeSnippet';
+import { SendAssessmentDialog } from '../../components/candidates/SendAssessmentDialog';
 import { reportsApi } from '../../api/reports.api';
 import { ApiRequestError } from '../../api/client';
 import { cn } from '../../lib/cn';
@@ -232,6 +234,9 @@ function StatChip({ icon, label, value, alert }: { icon: React.ReactNode; label:
 export default function ReportPage() {
   const { id } = useParams(); // session id
   const [report, setReport] = useState<ReportView | null>(null);
+  // Part of the same flow as the candidate page's button — same dialog, same
+  // endpoint, this candidate already chosen.
+  const [sendingAnother, setSendingAnother] = useState(false);
   const [pending, setPending] = useState<{ scored: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -339,14 +344,41 @@ export default function ReportPage() {
   return (
     <>
       <PageHeader
-        title={session.candidate_label ?? 'Candidate'}
+        title={
+          // The name links to the person's record when there is one — a report
+          // is one event in a history, and the history is a click away.
+          session.candidate ? (
+            <Link
+              to={`/candidates/${session.candidate.id}`}
+              className="transition hover:text-brand-700"
+            >
+              {session.candidate_label ?? session.candidate.name}
+            </Link>
+          ) : (
+            (session.candidate_label ?? 'Candidate')
+          )
+        }
         subtitle={`${assessment.title} · submitted ${fmtDate(session.submitted_at)}`}
         actions={
-          <Button variant="secondary" disabled title="coming soon">
-            <Download size={16} /> Download PDF
-          </Button>
+          <div className="flex gap-2">
+            {session.candidate && (
+              <Button variant="secondary" onClick={() => setSendingAnother(true)}>
+                <Send size={15} /> Send another assessment
+              </Button>
+            )}
+            <Button variant="secondary" disabled title="coming soon">
+              <Download size={16} /> Download PDF
+            </Button>
+          </div>
         }
       />
+
+      {sendingAnother && session.candidate && (
+        <SendAssessmentDialog
+          candidate={{ name: session.candidate.name, email: session.candidate.email }}
+          onClose={() => setSendingAnother(false)}
+        />
+      )}
 
       {/* HERO */}
       <Card className="mb-6">

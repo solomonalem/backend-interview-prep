@@ -12,6 +12,7 @@ import {
   Briefcase,
   Plug,
   FileText,
+  Users,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
@@ -26,6 +27,7 @@ interface NavItem {
 
 const interviewerNav: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
+  { to: '/candidates', label: 'Candidates', icon: <Users size={18} /> },
   { to: '/bank', label: 'Question Bank', icon: <Library size={18} /> },
   { to: '/build', label: 'New Assessment', icon: <FilePlus2 size={18} /> },
   { to: '/ground/document', label: 'From a Document', icon: <FileText size={18} /> },

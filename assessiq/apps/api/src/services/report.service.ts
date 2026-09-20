@@ -228,6 +228,10 @@ export async function getReport(
       },
       behavior_events: true,
       report: true,
+      // The manager's record for this person, when the link was filed under
+      // one. Carried so the report can point back at their history — never
+      // because the candidate has an account here. They do not.
+      link: { select: { candidate: { select: { id: true, name: true, email: true } } } },
     },
   });
   // Not found OR not owned → 404 (don't leak existence of others' sessions).
@@ -263,6 +267,13 @@ export async function getReport(
       session: {
         id: session.id,
         candidate_label: session.candidate_label,
+        candidate: session.link?.candidate
+          ? {
+              id: session.link.candidate.id,
+              name: session.link.candidate.name,
+              email: session.link.candidate.email,
+            }
+          : null,
         started_at: session.started_at?.toISOString() ?? null,
         submitted_at: session.submitted_at?.toISOString() ?? null,
         time_used_ms: timeUsed,

@@ -133,6 +133,7 @@ export async function listAssessments(ownerId: string): Promise<AssessmentListRe
         token: link.token,
         candidate_label: link.candidate_label,
         candidate_email: link.candidate_email,
+        candidate_id: link.candidate_id,
         status: deriveLinkStatus(link),
         overall_score: linkOverallScore(link),
       })),
@@ -186,6 +187,7 @@ export async function getAssessmentDetail(
         token: link.token,
         candidate_label: link.candidate_label,
         candidate_email: link.candidate_email,
+        candidate_id: link.candidate_id,
         expires_at: link.expires_at.toISOString(),
         status,
         ...(link.session

@@ -135,9 +135,12 @@ export default function DashboardPage() {
           ) : (
             <div className="divide-y divide-slate-100">
               {allLinks.slice(0, 8).map((l) => (
+                // A row with a candidate record goes to the person; one
+                // without goes to the assessment, as it always has. Following a
+                // name should land on that name's history when there is one.
                 <Link
                   key={l.id}
-                  to={`/assessments/${l.assessmentId}`}
+                  to={l.candidate_id ? `/candidates/${l.candidate_id}` : `/assessments/${l.assessmentId}`}
                   className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition"
                 >
                   <Avatar name={candidateDisplayName(l)} seed={l.token} size="sm" />

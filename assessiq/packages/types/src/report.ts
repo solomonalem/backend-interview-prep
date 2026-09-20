@@ -137,6 +137,12 @@ export interface ReportView {
   session: {
     id: string;
     candidate_label: string | null;
+    /**
+     * The manager's record for this person, when one exists. Present so the
+     * report can link back to their history and offer to send them another
+     * assessment — not because the candidate has an account. They do not.
+     */
+    candidate: { id: string; name: string; email: string } | null;
     started_at: string | null;
     submitted_at: string | null;
     time_used_ms: number;

@@ -43,7 +43,9 @@ export function PageHeader({
   subtitle,
   actions,
 }: {
-  title: string;
+  // A node, not a string: some titles link somewhere (a report's title links
+  // to the candidate's record).
+  title: ReactNode;
   subtitle?: string;
   actions?: ReactNode;
 }) {
