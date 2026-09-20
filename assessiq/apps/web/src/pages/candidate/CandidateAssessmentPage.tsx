@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowRight, MessageCircleQuestion, Send, TimerOff } from 'lucide-react';
-import type { BehaviorEventInput, CandidateProbe, CandidateQuestion } from '@assessiq/types';
+import type { BehaviorEventInput, CandidateProbe, CandidateQuestion, SnippetLanguage } from '@assessiq/types';
+import { SNIPPET_DEFAULT_LANGUAGE, SNIPPET_MAX_CHARS } from '@assessiq/types';
 import { Badge, Button, ProgressBar, Textarea, Spinner } from '../../components/ui';
+import { CodeSketchField } from '../../components/session/CodeSketchField';
 import { cn } from '../../lib/cn';
 import { sessionsApi } from '../../api/sessions.api';
 import { ApiRequestError } from '../../api/client';
@@ -23,6 +25,12 @@ export default function CandidateAssessmentPage() {
   const [position, setPosition] = useState(s.firstQuestion?.position ?? 0);
   const [question, setQuestion] = useState<CandidateQuestion | null>(s.firstQuestion?.question ?? null);
   const [draft, setDraft] = useState('');
+  // The optional code sketch. Part of the answer, not a second submission:
+  // it is cleared when the answer is, sent when the answer is sent, and — if
+  // the box was never opened — never mentioned to the server at all.
+  const [sketchOpen, setSketchOpen] = useState(false);
+  const [sketch, setSketch] = useState('');
+  const [sketchLang, setSketchLang] = useState<SnippetLanguage>(SNIPPET_DEFAULT_LANGUAGE);
   const [confidence, setConfidence] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -224,6 +232,9 @@ export default function CandidateAssessmentPage() {
     setPosition(q.position);
     setQuestion(q.question);
     setDraft('');
+    setSketchOpen(false);
+    setSketch('');
+    setSketchLang(SNIPPET_DEFAULT_LANGUAGE);
     setConfidence(null);
     shownAt.current = Date.now();
     lastActivity.current = Date.now();
@@ -231,6 +242,15 @@ export default function CandidateAssessmentPage() {
 
   const submit = async () => {
     if (submitting) return;
+    // The server enforces this too. Stopping here is about the message: a 400
+    // after a submit on a timed assessment reads as something breaking, where
+    // a count turning red while you type reads as a limit.
+    if (sketch.length > SNIPPET_MAX_CHARS) {
+      setError(
+        `Your code snippet is too long — the limit is ${SNIPPET_MAX_CHARS.toLocaleString()} characters.`,
+      );
+      return;
+    }
     setSubmitting(true);
     setError(null);
     // Before the answer, so the paste events for this question are on the
@@ -243,6 +263,11 @@ export default function CandidateAssessmentPage() {
           question_id: question.id,
           position,
           text: draft.trim(),
+          // Omitted entirely when nothing was written — the server stores NULL,
+          // and an untouched box never becomes an empty string in the database.
+          ...(sketch.trim()
+            ? { snippet_code: sketch, snippet_language: sketchLang }
+            : {}),
           ...(confidenceEnabled && confidence ? { confidence_rating: confidence } : {}),
           time_spent_ms: Date.now() - shownAt.current,
         },
@@ -454,6 +479,29 @@ export default function CandidateAssessmentPage() {
             placeholder="Type your answer here…"
             className="min-h-[16rem]"
             autoFocus
+          />
+
+          {/* Under the answer, above confidence: it belongs to the answer, and
+              putting it after the rating would read as a separate task. */}
+          <CodeSketchField
+            open={sketchOpen}
+            code={sketch}
+            language={sketchLang}
+            onOpen={() => setSketchOpen(true)}
+            onRemove={() => {
+              setSketchOpen(false);
+              setSketch('');
+              setSketchLang(SNIPPET_DEFAULT_LANGUAGE);
+            }}
+            onCodeChange={setSketch}
+            onLanguageChange={setSketchLang}
+            // The same event type, on the same question index, as the answer
+            // box — so a paste into the sketch counts for the report and for
+            // the flagged_only probe rule exactly as a paste into the prose does.
+            onPaste={(chars) => pushEvent('paste', { char_count: chars })}
+            onActivity={() => {
+              lastActivity.current = Date.now();
+            }}
           />
 
           {confidenceEnabled && (
