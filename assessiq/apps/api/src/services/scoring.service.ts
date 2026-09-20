@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { anthropic, SCORING_MODEL } from '../lib/claude.js';
 import { confidenceFlag, defenseTotal, weightedTotal } from '../utils/score-calc.js';
+import { answerWithSnippet } from '../utils/snippet.js';
 import { compileReport } from './report.service.js';
 
 export interface ScoreResult {
@@ -20,7 +21,15 @@ export interface ScoreResult {
 const SYSTEM_PROMPT = `You are an expert technical interview rubric grader.
 You will receive a question, its rubric definition, and a candidate's answer.
 You must score the answer against four components and return ONLY a JSON object.
-Do not include any explanation, preamble, or markdown. Return raw JSON only.`;
+Do not include any explanation, preamble, or markdown. Return raw JSON only.
+
+The answer may include a code sketch, marked by a line reading
+"[Candidate attached a code sketch — <language>]". Treat it as part of the answer's reasoning.
+Judge what the code REVEALS about their understanding — the approach they reached for, how they
+handle edges, whether the logic is actually correct. Do NOT grade style, formatting, naming, or
+whether it would compile; it was typed into a plain box under a clock and was never run.
+A sketch is optional: an answer without one is never penalised for its absence, and prose alone
+can score full marks on every component.`;
 
 function buildUserPrompt(q: {
   text: string;
@@ -291,7 +300,15 @@ export async function scoreAnswer(answerId: string): Promise<void> {
 
   await prisma.answer.update({ where: { id: answerId }, data: { scoring_status: 'scoring' } });
 
-  const { result, modelUsed } = await scoreAnswerText(answer.question, answer.text, answer.id);
+  // Prose and sketch as one artifact, so the scorer, the defense scorer and
+  // probe generation are all reading the same answer.
+  const answerForModel = answerWithSnippet(
+    answer.text,
+    answer.snippet_code,
+    answer.snippet_language,
+  );
+
+  const { result, modelUsed } = await scoreAnswerText(answer.question, answerForModel, answer.id);
 
   const total = weightedTotal(
     result.core_pct,
@@ -328,7 +345,7 @@ export async function scoreAnswer(answerId: string): Promise<void> {
 
   // After the answer's own score is committed — the defense is a comparison
   // against it, and a failure here must never roll back the score above.
-  await scoreDefenseFor(answerId, answer.question.text, answer.text);
+  await scoreDefenseFor(answerId, answer.question.text, answerForModel);
 }
 
 export async function markAnswerFailed(answerId: string): Promise<void> {

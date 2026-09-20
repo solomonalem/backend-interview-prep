@@ -9,6 +9,7 @@ import type {
   ScoreOverride,
   SetScoreOverrideRequest,
 } from '@assessiq/types';
+import { isSnippetLanguage } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { probeDeltaFlag, verdictFor, weightedTotal } from '../utils/score-calc.js';
@@ -343,6 +344,12 @@ export async function getReport(
                 text: a.text,
                 time_spent_ms: a.time_spent_ms,
                 paste_detected: pastedPositions.has(a.position),
+                snippet_code: a.snippet_code,
+                // Narrowed rather than passed through: the report must never
+                // hand the highlighter a language it does not know about.
+                snippet_language: isSnippetLanguage(a.snippet_language)
+                  ? a.snippet_language
+                  : null,
               }
             : null,
           score,

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { SNIPPET_LANGUAGES, SNIPPET_MAX_CHARS } from '@assessiq/types';
 import { authCandidate } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import {
@@ -51,6 +52,18 @@ const answerSchema = z.object({
   question_id: z.string().min(1),
   position: z.number().int().nonnegative(),
   text: z.string(),
+  // The optional code sketch. Validated for exactly two things — that it fits,
+  // and that the language is one we actually offer — because those are the
+  // only two claims the server makes about it. It is never parsed, linted,
+  // compiled or run; it is text a model will read.
+  //
+  // The cap is enforced here as well as in the browser: a client-side limit is
+  // a courtesy to the person typing, not a rule about what may be stored.
+  snippet_code: z
+    .string()
+    .max(SNIPPET_MAX_CHARS, `Your code snippet is too long — the limit is ${SNIPPET_MAX_CHARS} characters.`)
+    .optional(),
+  snippet_language: z.enum(SNIPPET_LANGUAGES).optional(),
   confidence_rating: z.number().int().min(1).max(5).optional(),
   time_spent_ms: z.number().int().nonnegative(),
 });

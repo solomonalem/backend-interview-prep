@@ -41,6 +41,7 @@ import {
   OverrideBanner,
   ScoreOverrideEditor,
 } from '../../components/ScoreOverride';
+import { CodeSnippet } from '../../components/report/CodeSnippet';
 import { reportsApi } from '../../api/reports.api';
 import { ApiRequestError } from '../../api/client';
 import { cn } from '../../lib/cn';
@@ -562,6 +563,18 @@ export default function ReportPage() {
                     <p className="max-w-[95ch] text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
                       {q.answer.text || <span className="italic text-slate-400">No answer provided</span>}
                     </p>
+                    {/* Beneath the prose, inside the same block: the sketch is
+                        part of this answer and was scored as part of it, so
+                        reading it as a separate artifact would misrepresent
+                        what the numbers below are about. */}
+                    {q.answer.snippet_code && (
+                      <div className="mt-3">
+                        <CodeSnippet
+                          code={q.answer.snippet_code}
+                          language={q.answer.snippet_language}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 
