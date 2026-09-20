@@ -23,6 +23,7 @@ model User {
   score_overrides Score[]     // scores this interviewer has overridden or flagged
   repo_integrations RepoIntegration[]
   grounding_documents GroundingDocument[]
+  candidates    Candidate[]
 
   @@map("users")
 }
@@ -175,6 +176,35 @@ model AssessmentQuestion {
 
 // ─── ASSESSMENT LINKS (SHAREABLE URLS) ───────────────────────────────────────
 
+// A person the manager is assessing — THEIR record, not an account.
+//
+// The candidate never sees this, never logs in, and has no password: they click
+// a signed link and that is the whole of their relationship with the product.
+// This row exists so the manager can answer "what have we sent Alex, and how
+// did it go" without reading down a list of assessments.
+//
+// Identity is (owner, email), because email is the only stable handle a person
+// without an account has. Scoped to the owner so two managers assessing the
+// same person keep separate notes — org-level sharing is blueprint C.
+model Candidate {
+  id         String   @id @default(cuid())
+  owner_id   String
+  owner      User     @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+
+  name       String
+  email      String   // always stored lowercase — see normaliseEmail
+  notes      String?  // the manager's own notes; never shown to the candidate
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  links      AssessmentLink[]
+
+  @@unique([owner_id, email])
+  @@index([owner_id])
+  @@map("candidates")
+}
+
 model AssessmentLink {
   id              String      @id @default(cuid())
   token           String      @unique   // random 10-char, URL-safe — this is the URL slug
@@ -186,6 +216,12 @@ model AssessmentLink {
   // the identity we can de-duplicate on — a candidate has no account, so it is
   // the only reliable way to tell "already took this" from "new person".
   candidate_email String?
+  // The record this link belongs to, when there is one. Nullable and SetNull
+  // on delete: deleting a candidate record must never take an assessment, a
+  // session or a report with it — the link simply goes back to standing alone,
+  // exactly as every link did before records existed.
+  candidate_id    String?
+  candidate       Candidate?  @relation(fields: [candidate_id], references: [id], onDelete: SetNull)
   expires_at      DateTime
   opened_at       DateTime?   // set when candidate first clicks link
   session_id      String?     @unique  // set when session is created from this link
@@ -195,6 +231,7 @@ model AssessmentLink {
   session     Session?  @relation(fields: [session_id], references: [id])
 
   @@index([assessment_id, candidate_email])
+  @@index([candidate_id])
   @@map("assessment_links")
 }
 
