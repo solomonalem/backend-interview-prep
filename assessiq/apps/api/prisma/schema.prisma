@@ -246,6 +246,18 @@ model Answer {
 
   text            String    // the candidate's answer text
 
+  // ── An optional code sketch supporting the answer ────────────────────────
+  // Read, never run: there is no execution environment anywhere in this
+  // product (see packages/types/src/snippet.ts for why that is a decision
+  // rather than a gap). The sketch is evidence inside the answer, not a
+  // submission of its own — it is scored with the prose, quoted by follow-up
+  // probes, and shown under the answer in the report.
+  //
+  // Both columns move together: null/null when nothing was attached. A
+  // language with no code would be a setting nobody chose.
+  snippet_code     String?  // verbatim, capped at SNIPPET_MAX_CHARS
+  snippet_language String?  // one of SNIPPET_LANGUAGES; 'auto' pins nothing
+
   confidence_rating Int?    // 1–5, null if feature disabled or skipped
   time_spent_ms   Int       // milliseconds from question shown to answer submitted
 

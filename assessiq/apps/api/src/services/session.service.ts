@@ -14,6 +14,7 @@ import { prisma } from '../lib/prisma.js';
 import { signCandidateToken } from '../lib/jwt.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { scoringQueue } from '../queues/scoring.queue.js';
+import { answerWithSnippet, normalizeSnippet } from '../utils/snippet.js';
 import {
   createProbeForAnswer,
   finalizeOpenProbes,
@@ -231,6 +232,11 @@ export async function submitAnswer(
     throw new AppError(400, 'QUESTION_MISMATCH', 'question_id does not match this position');
   }
 
+  // The optional code sketch. Normalised once, here, and used everywhere this
+  // answer is read afterwards — an empty box becomes NULL rather than '' so
+  // that "no sketch" is one fact in the database instead of two.
+  const snippet = normalizeSnippet(body.snippet_code, body.snippet_language);
+
   const mode = s.assessment.probes_mode;
   // Only looked up when probes are on: with mode `off` this function must do
   // exactly what it did before the feature existed, down to the query count.
@@ -245,6 +251,8 @@ export async function submitAnswer(
       question_id: body.question_id,
       position: body.position,
       text: body.text,
+      snippet_code: snippet.code,
+      snippet_language: snippet.language,
       confidence_rating: body.confidence_rating ?? null,
       time_spent_ms: body.time_spent_ms,
       scoring_status: 'pending',
@@ -274,7 +282,10 @@ export async function submitAnswer(
       probe = await createProbeForAnswer(
         answer.id,
         guides,
-        body.text,
+        // The sketch goes in with the prose: a follow-up written from a line of
+        // the candidate's own code is the strongest defense test available, and
+        // it is only available if the generator can see the code.
+        answerWithSnippet(body.text, snippet.code, snippet.language),
         s.assessment.probe_time_seconds,
       );
     }

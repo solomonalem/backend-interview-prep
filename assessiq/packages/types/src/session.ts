@@ -1,6 +1,8 @@
 // Candidate-facing session types (see docs/08 — Candidate Session Routes).
 // Candidates never receive rubric fields — only id/text/topic per question.
 
+import type { SnippetLanguage } from './snippet.js';
+
 export interface CandidateQuestion {
   id: string;
   text: string;
@@ -48,6 +50,16 @@ export interface SubmitAnswerRequest {
   question_id: string;
   position: number;
   text: string;
+  /**
+   * An optional code sketch supporting the answer. Part of the answer, not a
+   * submission of its own: it is sent with it, scored with it, and — when the
+   * box was left empty — stored as NULL rather than as an empty string.
+   *
+   * Never executed. Nothing anywhere in this product runs candidate code.
+   */
+  snippet_code?: string;
+  /** Only meaningful alongside snippet_code. 'auto' (the default) pins nothing. */
+  snippet_language?: SnippetLanguage;
   confidence_rating?: number;
   time_spent_ms: number;
 }
