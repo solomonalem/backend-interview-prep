@@ -5,6 +5,7 @@ import {
   Clock,
   FileText,
   ShieldAlert,
+  MessageCircleQuestion,
   ArrowRight,
   TriangleAlert,
   type LucideIcon,
@@ -58,6 +59,7 @@ export default function LinkLandingPage() {
         expiresAt: res.expires_at,
         total: meta?.question_count ?? 1,
         confidenceEnabled: meta?.confidence_rating_enabled ?? false,
+        probesEnabled: meta?.probes_enabled ?? false,
         firstQuestion: res.first_question,
       });
       navigate(`/a/${token}/session`);
@@ -153,6 +155,27 @@ export default function LinkLandingPage() {
                     This session passively logs tab switches, focus loss, paste events, and idle
                     time. This is shared with the interviewer as context — it is never used for
                     automatic disqualification.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Disclosed before they agree to start, for the same reason
+                proctoring is: a mechanic the candidate meets for the first time
+                mid-assessment is a trick, whatever it measures. */}
+            {meta.probes_enabled && (
+              <div className="flex gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3.5">
+                <span className="h-9 w-9 rounded-lg bg-sky-100 text-sky-600 flex items-center justify-center shrink-0">
+                  <MessageCircleQuestion size={18} />
+                </span>
+                <div>
+                  <p className="text-sm font-semibold text-sky-900">Follow-up questions</p>
+                  <p className="mt-1 text-xs leading-relaxed text-sky-800">
+                    After you submit an answer, a short follow-up about what you wrote may appear
+                    before the next question. Each one has its own{' '}
+                    {Math.round(meta.probe_time_seconds)}-second timer and submits whatever you
+                    have typed when it reaches zero. A brief, direct reply is all that's wanted —
+                    and leaving one blank is allowed.
                   </p>
                 </div>
               </div>

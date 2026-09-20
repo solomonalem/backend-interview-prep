@@ -16,6 +16,19 @@ export const TAGGING_MODEL = process.env.TAGGING_MODEL ?? 'claude-haiku-4-5';
 // for variety (the rubric is kept precise by the prompt, not by the sampler).
 export const GENERATION_MODEL = process.env.GENERATION_MODEL ?? 'claude-sonnet-4-6';
 
+// Writing ONE follow-up from text that is already in front of you is not the
+// same job as writing a question plus a calibrated four-part rubric, and it has
+// a constraint the others don't: a candidate is watching a spinner, and a probe
+// that misses its ~8s budget is not a slow probe, it is no probe at all.
+// Measured on Sonnet 4.6 the call ran 6-8s and lost roughly half its attempts to
+// the budget; on Haiku 4.5 it is ~2s with no loss of specificity, because the
+// hard part (finding the phrase to quote) is reading, not judgement.
+//
+// Named separately for the same reason SYNTHESIS_MODEL is: docs/BUILD_FOLLOWUP_PROBES.md
+// says GENERATION_MODEL, and one variable cannot express two different latency
+// budgets on the same box.
+export const PROBE_MODEL = process.env.PROBE_MODEL ?? 'claude-haiku-4-5';
+
 // Repo scanning reads a lot of code and concludes very little per file, so the
 // per-batch pass runs on Haiku (design §5.4). The final synthesis — turning
 // dozens of flat observations into a handful of findings worth interviewing on

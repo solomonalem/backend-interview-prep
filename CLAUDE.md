@@ -164,6 +164,27 @@ as "Grounded in: <title>" in the review panel. **Candidates see nothing of it**:
 their payload stays `{id, text, topic}`. Page: `/ground/document`. Build spec:
 `docs/BUILD_DOCUMENT_GROUNDING.md`.
 
+### Follow-up probes (Feature B — built, PR open to `develop`)
+The anti-assistance mechanic, and the reason it works without a human present:
+after an answer is submitted, the system can ask ONE follow-up **written from
+the candidate's own words** — quoting a phrase they wrote — answered under a
+short timer (60–180s, default 90). The signal is not the defense score but the
+**delta** between the answer and its defense: ≤20 "Defended their answer",
+21–40 "Partially defended", >40 "Could not defend". Per assessment,
+`probes_mode` is `off` | `flagged_only` | `all`; the **column** default is
+`off` so pre-feature assessments are unchanged, while the **API** defaults a
+new assessment to `flagged_only`. Generation runs inside the submit request
+under a hard **8s budget** and is **never stubbed** — past the budget the probe
+is not shown, a `generation_failed` row is recorded for the report, and the
+candidate flows on knowing nothing about it. The defense is scored on a
+**reduced rubric** (core + senior signal only, re-weighted 25/35 of the 60 they
+share) in the same job as the answer, right after it. An empty box is a
+legitimate, scored outcome: `unanswered`, `defense_pct` 0, no model call.
+**Disclosure is up front** — the instructions page names follow-ups and their
+timer before the candidate starts, the same honesty rule as proctoring — and
+the report presents the delta as context, never a verdict. Build spec:
+`docs/BUILD_FOLLOWUP_PROBES.md`.
+
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
 AI tagging, and JD decode — all on the same question bank, using only the
@@ -178,9 +199,11 @@ AI tagging, and JD decode — all on the same question bank, using only the
 | Per-file repo analysis | `claude-haiku-4-5` | many small calls over a file selection |
 | Findings synthesis | `claude-sonnet-4-6` @ temp 0 | judgement across the whole scan |
 | Document sufficiency check | `claude-haiku-4-5` (`DECODE_MODEL`) | one cheap call in front of a textarea |
+| Follow-up probe generation | `claude-haiku-4-5` (`PROBE_MODEL`) | a candidate is waiting: 8s budget, ~2s on Haiku vs 6-8s on Sonnet |
+| Defense scoring | `claude-sonnet-4-6` @ temp 0 (`SCORING_MODEL`) | the same scorer, on a reduced rubric |
 
 All overridable via `SCORING_MODEL` / `GENERATION_MODEL` / `DECODE_MODEL` /
-`TAGGING_MODEL` / `ANALYSIS_MODEL` / `SYNTHESIS_MODEL`. No `ANTHROPIC_API_KEY` → scoring falls back to a dev stub and
+`TAGGING_MODEL` / `ANALYSIS_MODEL` / `SYNTHESIS_MODEL` / `PROBE_MODEL`. No `ANTHROPIC_API_KEY` → scoring falls back to a dev stub and
 decode to a keyword heuristic (both self-identify via `source`); generation has
 no stub and fails loudly, because a fabricated rubric is indistinguishable from
 a real one.
@@ -278,13 +301,13 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ## Next wave — post-v1.1.0
 
-**The plan is `docs/BLUEPRINT_POST_EPIC.md`** — read it before building any of
-it. Two features, sequenced. **A. document-grounded generation is BUILT** — see
-the status section above; it sits on `feat/document-grounding` with a PR open to
-`develop`. **B. automated follow-up probes** is next (defend your own answer
-under a short timer; the delta between answer and defense is the signal), spec
-in `docs/BUILD_FOLLOWUP_PROBES.md`. Sections C/D/E of the blueprint are designs
-only — deliberately not built.
+**The plan is `docs/BLUEPRINT_POST_EPIC.md`.** Both of its buildable features
+are now done: **A. document-grounded generation** (merged to `develop`, PR #29)
+and **B. automated follow-up probes** (on `feat/followup-probes`, PR open) —
+both described in the status section above. Sections C/D/E of the blueprint are
+designs only — deliberately not built, each with a stated trigger to revisit.
+With B merged there is no queued feature work; the follow-ups below are the
+list.
 
 ### Follow-ups and deliberate exclusions
 
@@ -305,7 +328,19 @@ Nothing is half-finished; these are known gaps, roughly in value order.
 5. **Override reach.** Overrides are per-question only. A session-level "I
    disagree with this verdict" and a filter for overridden reports are the
    obvious follow-ups; neither is needed for the human to have the final say.
-6. **The bank page shows only the first 100 questions.** `QuestionBankPage`
+6. **`flagged_only` never sees a score.** The mode is specified as "paste flag
+   OR top scoring band", but scoring is asynchronous and nothing is scored
+   until session submit, so at answer-submit time the paste flag is the only
+   signal that exists. Closing the gap means either scoring answers as they
+   arrive (a real change to the queue's shape) or accepting that the top-band
+   half of that rule is unreachable. Currently the latter, stated in the code
+   at `probeIsDue`.
+7. **A server-expired session never enqueues scoring.** `ensureActive`
+   auto-submits a session whose timer elapsed but does not queue its answers,
+   so a candidate who abandons the tab past the deadline gets no report. Only
+   reachable when the client-side timer never fires; predates the probes work,
+   found while reading that path.
+8. **The bank page shows only the first 100 questions.** `QuestionBankPage`
    fetches `limit: 100` ordered oldest-first with no pagination control, so the
    newest questions — including freshly generated grounded ones — are reachable
    only through search. Pre-dates Feature A; noticed while testing it.

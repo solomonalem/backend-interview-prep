@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authCandidate } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import {
+  answerProbe,
   getQuestion,
   recordEvents,
   startSession,
@@ -64,6 +65,26 @@ sessionsRouter.post(
       throw new AppError(400, 'VALIDATION', parsed.error.issues[0]?.message ?? 'Invalid answer');
     }
     res.status(201).json(await submitAnswer(req.candidate!.sessionId, parsed.data));
+  }),
+);
+
+const probeAnswerSchema = z.object({
+  text: z.string(),
+  time_spent_ms: z.number().int().nonnegative(),
+});
+
+// POST /sessions/:id/probes/:probeId/answer — the defense.
+// An empty body is valid and expected: the probe timer auto-submits whatever is
+// in the box, and leaving it empty is a legitimate outcome rather than an error.
+sessionsRouter.post(
+  '/:id/probes/:probeId/answer',
+  authCandidate,
+  asyncHandler(async (req, res) => {
+    const parsed = probeAnswerSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid follow-up answer');
+    const { probeId } = req.params;
+    if (!probeId) throw new AppError(400, 'VALIDATION', 'probeId is required');
+    res.json(await answerProbe(req.candidate!.sessionId, probeId, parsed.data));
   }),
 );
 

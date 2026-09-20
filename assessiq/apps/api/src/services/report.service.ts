@@ -1,6 +1,8 @@
+import type { Probe } from '@prisma/client';
 import type {
   Difficulty,
   ReportOverallOverride,
+  ReportProbe,
   ReportResponse,
   ReportScore,
   ReportView,
@@ -9,7 +11,7 @@ import type {
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
-import { verdictFor, weightedTotal } from '../utils/score-calc.js';
+import { probeDeltaFlag, verdictFor, weightedTotal } from '../utils/score-calc.js';
 import { sendReportReady } from './email.service.js';
 
 function avg(nums: number[]): number {
@@ -60,6 +62,32 @@ const effective = (overridden: number | null, ai: number): number => overridden 
 
 // Session figures recomputed with every override applied. Returns null when
 // nothing is overridden, which is what tells the UI to show the AI block alone.
+/**
+ * The follow-up as the interviewer reads it.
+ *
+ * The delta is computed against the AI's own total, never an overridden one.
+ * Both sides of the comparison have to have been produced the same way for the
+ * gap between them to mean anything; folding a human's corrected number into
+ * one side would leave a figure that looks precise and measures nothing.
+ *
+ * Framing is deliberate throughout: this returns numbers and a band, and the
+ * band names what happened to the defense. It draws no conclusion about why.
+ */
+function probeView(probe: Probe | null, answerTotal: number | null): ReportProbe | null {
+  if (!probe) return null;
+  const delta =
+    probe.defense_pct !== null && answerTotal !== null ? answerTotal - probe.defense_pct : null;
+  return {
+    status: probe.status as ReportProbe['status'],
+    text: probe.text,
+    candidate_answer: probe.candidate_answer,
+    time_spent_ms: probe.time_spent_ms,
+    defense_pct: probe.defense_pct,
+    delta,
+    flag: delta !== null ? probeDeltaFlag(delta) : null,
+  };
+}
+
 function overallOverride(scores: OverridableScore[]): ReportOverallOverride | null {
   const overridden = scores.filter((s) => s.override_flag);
   if (overridden.length === 0) return null;
@@ -194,6 +222,7 @@ export async function getReport(
               overridden_by_user: { select: { name: true, email: true } },
             },
           },
+          probe: true,
         },
       },
       behavior_events: true,
@@ -306,6 +335,7 @@ export async function getReport(
             topic: question.topic,
             difficulty: question.difficulty as Difficulty,
           },
+          probe: probeView(a?.probe ?? null, a?.score?.total_pct ?? null),
           // null means the candidate never submitted this one — the UI renders
           // it as "Not answered" rather than dropping the row.
           answer: a

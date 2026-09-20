@@ -61,6 +61,32 @@ export interface SetScoreOverrideRequest {
   evidence_pct?: number;
 }
 
+/**
+ * How well the candidate held up their own answer when asked to go one level
+ * deeper on it, under a short timer.
+ *
+ * `delta` is the whole point: a defense score means little on its own, but the
+ * distance between an answer and its defense is a fact about the pair. The
+ * report presents it as context for the interviewer's judgment and never draws
+ * a conclusion from it.
+ */
+export type ProbeDeltaFlag = 'defended' | 'partially_defended' | 'not_defended';
+
+export type ReportProbeStatus = 'generated' | 'answered' | 'unanswered' | 'generation_failed';
+
+export interface ReportProbe {
+  status: ReportProbeStatus;
+  /** null on a generation_failed probe — there is no question to show. */
+  text: string | null;
+  candidate_answer: string | null;
+  time_spent_ms: number | null;
+  /** Scored on core + senior signal only. null until the defense is scored. */
+  defense_pct: number | null;
+  /** answer total − defense_pct. Positive means the defense scored lower. */
+  delta: number | null;
+  flag: ProbeDeltaFlag | null;
+}
+
 export interface ReportQuestion {
   position: number;
   question: { id: string; text: string; topic: string; difficulty: Difficulty };
@@ -68,6 +94,8 @@ export interface ReportQuestion {
   score: ReportScore | null;
   confidence_rating: number | null;
   confidence_flag: string | null;
+  /** null when no follow-up was due on this question. */
+  probe: ReportProbe | null;
 }
 
 /** Session-level figures with overrides applied. Sits beside the AI originals. */

@@ -1,6 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { anthropic, SCORING_MODEL } from '../lib/claude.js';
-import { confidenceFlag, weightedTotal } from '../utils/score-calc.js';
+import { confidenceFlag, defenseTotal, weightedTotal } from '../utils/score-calc.js';
 import { compileReport } from './report.service.js';
 
 export interface ScoreResult {
@@ -124,6 +124,159 @@ export async function scoreAnswerText(
   return { result: stubScore(answerText, seed), modelUsed: 'stub-dev' };
 }
 
+// ── Scoring a defense ────────────────────────────────────────────────────────
+// A follow-up probe asked the candidate to go one level deeper on their own
+// answer under a short clock. What comes back is scored on a REDUCED rubric —
+// core and senior signal only. Trap and evidence are dropped deliberately: a
+// 90-second defense of a point already made cannot fairly be asked for a worked
+// example, and scoring it as if it could would depress every defense equally
+// and make the delta measure the clock instead of the candidate.
+
+interface DefenseResult {
+  core_pct: number;
+  core_reasoning: string;
+  senior_signal_pct: number;
+  senior_signal_reasoning: string;
+}
+
+const DEFENSE_SYSTEM = `You grade a candidate's SHORT, TIMED follow-up response in a technical
+interview. Return ONLY a JSON object — no explanation, no preamble, no markdown.
+
+You are scoring two things and nothing else:
+- core (0-100): does the response actually address what was asked, correctly?
+- senior_signal (0-100): does it show the judgement of someone who understands the system they
+  described — the tradeoff, the boundary, the failure mode — rather than someone restating a
+  definition?
+
+Grade it as what it is: about ninety seconds of typing, with no time to look anything up.
+Reward a short, specific, correct response. Do NOT penalise brevity, missing examples,
+informal phrasing or a lack of structure — none of those were available in the time given.
+Do penalise a response that is fluent but evasive, that repeats the original answer without
+engaging the follow-up, or that contradicts what the candidate previously wrote.
+
+Return exactly:
+{"core_pct":<0-100>,"core_reasoning":"<one sentence>","senior_signal_pct":<0-100>,"senior_signal_reasoning":"<one sentence>"}`;
+
+function buildDefensePrompt(
+  questionText: string,
+  originalAnswer: string,
+  probeText: string,
+  defenseText: string,
+): string {
+  return `ORIGINAL QUESTION:
+${questionText}
+
+WHAT THE CANDIDATE ANSWERED:
+${originalAnswer || '(no answer provided)'}
+
+THE FOLLOW-UP THEY WERE ASKED:
+${probeText}
+
+THEIR TIMED RESPONSE TO THE FOLLOW-UP:
+${defenseText}
+
+Score the timed response.`;
+}
+
+// Same dev-stub rule as the main scorer: without a key the pipeline still runs
+// end to end locally, and says so via model_used.
+function stubDefense(text: string, seed: string): DefenseResult {
+  const len = text.trim().length;
+  const base = Math.max(30, Math.min(90, 35 + Math.floor(len / 8)));
+  const jitter = (n: number) =>
+    Math.max(0, Math.min(100, base + ((seed.charCodeAt(n % seed.length) % 17) - 8)));
+  return {
+    core_pct: jitter(0),
+    core_reasoning: 'Stub: defense coverage estimated from length (no API key).',
+    senior_signal_pct: jitter(1),
+    senior_signal_reasoning: 'Stub: defense senior-signal estimate (no API key).',
+  };
+}
+
+async function callDefenseScorer(user: string): Promise<DefenseResult> {
+  if (!anthropic) throw new Error('no-anthropic-client');
+  const res = await anthropic.messages.create({
+    model: SCORING_MODEL,
+    max_tokens: 500,
+    temperature: 0,
+    system: DEFENSE_SYSTEM,
+    messages: [{ role: 'user', content: user }],
+  });
+  const block = res.content[0];
+  if (!block || block.type !== 'text') throw new Error('unexpected-response-type');
+  const clean = block.text.replace(/```json|```/g, '').trim();
+  return JSON.parse(clean) as DefenseResult;
+}
+
+/**
+ * Score the defense attached to one answer, if there is one.
+ *
+ * Runs in the same job as the answer's own score, immediately after it, for two
+ * reasons: the delta needs both numbers, and the report compiles as soon as no
+ * answer is left pending — a defense scored on a separate queue could land
+ * after the report it belongs in.
+ *
+ * Never throws. A defense that cannot be scored must not cost the candidate
+ * their answer's score, which is already written by the time this runs.
+ */
+async function scoreDefenseFor(answerId: string, questionText: string, originalAnswer: string) {
+  const probe = await prisma.probe.findUnique({ where: { answer_id: answerId } });
+  if (!probe || probe.defense_pct !== null) return;
+  // Nothing was ever shown to defend.
+  if (probe.status === 'generation_failed') return;
+
+  const defenseText = (probe.candidate_answer ?? '').trim();
+
+  // An empty box scores zero without a model call. The spec is explicit that
+  // this is a scored outcome rather than a missing one — leaving a follow-up
+  // blank IS the answer to it — and there is nothing for a scorer to read.
+  if (probe.status === 'unanswered' || defenseText.length === 0) {
+    await prisma.probe.update({
+      where: { id: probe.id },
+      data: {
+        defense_core_pct: 0,
+        defense_senior_signal_pct: 0,
+        defense_pct: 0,
+        defense_core_reasoning: 'No response was given in the time allowed.',
+        defense_senior_reasoning: 'No response was given in the time allowed.',
+        model_used: 'not-scored-empty',
+        scored_at: new Date(),
+      },
+    });
+    return;
+  }
+
+  try {
+    const user = buildDefensePrompt(
+      questionText,
+      originalAnswer,
+      probe.text ?? '',
+      defenseText,
+    );
+    const { result, modelUsed } = anthropic
+      ? { result: await callDefenseScorer(user), modelUsed: SCORING_MODEL }
+      : { result: stubDefense(defenseText, probe.id), modelUsed: 'stub-dev' };
+
+    await prisma.probe.update({
+      where: { id: probe.id },
+      data: {
+        defense_core_pct: result.core_pct,
+        defense_senior_signal_pct: result.senior_signal_pct,
+        defense_core_reasoning: result.core_reasoning,
+        defense_senior_reasoning: result.senior_signal_reasoning,
+        defense_pct: defenseTotal(result.core_pct, result.senior_signal_pct),
+        model_used: modelUsed,
+        scored_at: new Date(),
+      },
+    });
+  } catch (err) {
+    // The report renders an unscored defense as exactly that. Silence here
+    // would be worse: a missing defense_pct with no explanation looks like the
+    // candidate was never asked.
+    console.error(`[scoring:defense] probe ${probe.id} failed:`, (err as Error).message);
+  }
+}
+
 // Score one answer and persist a Score row. Throws on failure (BullMQ retries).
 export async function scoreAnswer(answerId: string): Promise<void> {
   const answer = await prisma.answer.findUnique({
@@ -172,6 +325,10 @@ export async function scoreAnswer(answerId: string): Promise<void> {
   });
 
   await prisma.answer.update({ where: { id: answerId }, data: { scoring_status: 'scored' } });
+
+  // After the answer's own score is committed — the defense is a comparison
+  // against it, and a failure here must never roll back the score above.
+  await scoreDefenseFor(answerId, answer.question.text, answer.text);
 }
 
 export async function markAnswerFailed(answerId: string): Promise<void> {

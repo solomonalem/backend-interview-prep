@@ -27,6 +27,9 @@ const createSchema = z.object({
   timer_seconds: z.number().int().positive().optional(),
   proctoring_config: proctoringSchema.optional(),
   confidence_rating_enabled: z.boolean(),
+  probes_mode: z.enum(['off', 'flagged_only', 'all']).optional(),
+  // Clamped in the service rather than rejected here — see clampProbeSeconds.
+  probe_time_seconds: z.number().int().positive().optional(),
 });
 
 // POST /assessments — create a new assessment

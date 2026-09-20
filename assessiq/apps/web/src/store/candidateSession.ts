@@ -10,6 +10,9 @@ interface CandidateSessionState {
   expiresAt: string | null;
   total: number;
   confidenceEnabled: boolean;
+  /** Whether follow-ups can appear. Only used to explain the wait after a
+   *  submit — never to predict whether one will fire. */
+  probesEnabled: boolean;
   firstQuestion: { position: number; question: CandidateQuestion } | null;
   start: (data: {
     linkToken: string;
@@ -18,6 +21,7 @@ interface CandidateSessionState {
     expiresAt: string | null;
     total: number;
     confidenceEnabled: boolean;
+    probesEnabled: boolean;
     firstQuestion: { position: number; question: CandidateQuestion };
   }) => void;
   clear: () => void;
@@ -30,6 +34,7 @@ export const useCandidateSession = create<CandidateSessionState>((set) => ({
   expiresAt: null,
   total: 0,
   confidenceEnabled: true,
+  probesEnabled: false,
   firstQuestion: null,
   start: (data) => set({ ...data }),
   clear: () =>
@@ -40,6 +45,7 @@ export const useCandidateSession = create<CandidateSessionState>((set) => ({
       expiresAt: null,
       total: 0,
       confidenceEnabled: true,
+      probesEnabled: false,
       firstQuestion: null,
     }),
 }));
