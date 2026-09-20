@@ -23,6 +23,8 @@ import PracticePage from './pages/study/PracticePage';
 import StoryBankPage from './pages/study/StoryBankPage';
 import OnboardingPage from './pages/study/OnboardingPage';
 
+import SharedReportPage from './pages/SharedReportPage';
+
 import LinkLandingPage from './pages/candidate/LinkLandingPage';
 import CandidateAssessmentPage from './pages/candidate/CandidateAssessmentPage';
 import SubmittedPage from './pages/candidate/SubmittedPage';
@@ -46,6 +48,10 @@ export default function App() {
         <Routes>
           {/* Public */}
           <Route path="/login" element={<LoginPage />} />
+
+          {/* A shared report — public, read-only, and deliberately outside the
+              app shell: no nav, no sidebar, no way into the account behind it. */}
+          <Route path="/r/:token" element={<SharedReportPage />} />
 
           {/* Candidate flow (public, minimal chrome) */}
           <Route path="/a/:token" element={<CandidateLayout><LinkLandingPage /></CandidateLayout>} />

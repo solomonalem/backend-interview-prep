@@ -177,3 +177,23 @@ export interface ReportView {
 }
 
 export type ReportResponse = ReportView | ReportPending;
+
+// ── Shareable report links ───────────────────────────────────────────────────
+// A read-only link to one report, for people who have no account here and
+// should not need one — a teammate, a panel, a hiring committee. The token
+// authorises exactly one report view: it is resolved by its own server-side
+// path and is not accepted anywhere else in the API.
+
+export interface ReportShareSummary {
+  id: string;
+  /** The whole URL, ready to copy. */
+  url: string;
+  created_at: string;
+  /** Set once revoked. A dead link stays listed rather than vanishing, so the
+   *  manager can see it existed and is now closed. */
+  revoked_at: string | null;
+}
+
+export interface ReportShareListResponse {
+  shares: ReportShareSummary[];
+}

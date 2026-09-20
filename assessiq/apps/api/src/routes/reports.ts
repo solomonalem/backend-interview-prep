@@ -5,8 +5,14 @@ import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import {
   clearScoreOverride,
   getReport,
+  getSharedReport,
   setScoreOverride,
 } from '../services/report.service.js';
+import {
+  createReportShare,
+  listReportShares,
+  revokeReportShare,
+} from '../services/report-share.service.js';
 
 export const reportsRouter = Router();
 
@@ -19,6 +25,56 @@ reportsRouter.get(
     if (!sessionId) throw new AppError(400, 'VALIDATION', 'sessionId is required');
     const { code, body } = await getReport(req.interviewer!.id, sessionId);
     res.status(code).json(body);
+  }),
+);
+
+// ── Shared report links ──────────────────────────────────────────────────────
+// NOTE THE ORDER: this public route is declared before the authenticated ones
+// and matches a distinct path segment (/shared/:token), so nothing that takes
+// a session id can ever be reached with a share token. The token is resolved
+// by getSharedReport alone.
+
+// GET /reports/shared/:token — PUBLIC. One report, read-only, no account.
+reportsRouter.get(
+  '/shared/:token',
+  asyncHandler(async (req, res) => {
+    const { token } = req.params;
+    if (!token) throw new AppError(400, 'VALIDATION', 'token is required');
+    const { code, body } = await getSharedReport(token);
+    res.status(code).json(body);
+  }),
+);
+
+// POST /reports/session/:sessionId/shares — mint a read-only link
+reportsRouter.post(
+  '/session/:sessionId/shares',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) throw new AppError(400, 'VALIDATION', 'sessionId is required');
+    res.status(201).json(await createReportShare(req.interviewer!.id, sessionId));
+  }),
+);
+
+// GET /reports/session/:sessionId/shares — what has been handed out
+reportsRouter.get(
+  '/session/:sessionId/shares',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) throw new AppError(400, 'VALIDATION', 'sessionId is required');
+    res.json(await listReportShares(req.interviewer!.id, sessionId));
+  }),
+);
+
+// DELETE /reports/shares/:shareId — close one link off
+reportsRouter.delete(
+  '/shares/:shareId',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { shareId } = req.params;
+    if (!shareId) throw new AppError(400, 'VALIDATION', 'shareId is required');
+    res.json(await revokeReportShare(req.interviewer!.id, shareId));
   }),
 );
 

@@ -21,6 +21,7 @@ model User {
 
   assessments   Assessment[]
   score_overrides Score[]     // scores this interviewer has overridden or flagged
+  report_shares ReportShare[] // read-only report links they have handed out
   repo_integrations RepoIntegration[]
   grounding_documents GroundingDocument[]
   candidates    Candidate[]
@@ -256,6 +257,7 @@ model Session {
   updated_at      DateTime        @updatedAt
 
   link            AssessmentLink?
+  shares          ReportShare[]
   answers         Answer[]
   behavior_events BehaviorEvent[]
   report          Report?
@@ -463,6 +465,35 @@ enum BehaviorEventType {
 }
 
 // ─── REPORTS ─────────────────────────────────────────────────────────────────
+
+// A read-only link to one session's report.
+//
+// The same shape as a candidate link and for the same reason: the person
+// reading it — a teammate, a hiring panel, the candidate's future manager —
+// has no account here and should not need one. The token authorises exactly
+// one report view and nothing else; it is resolved by its own code path, not
+// by relaxing the check that protects everything else.
+//
+// Several per report is deliberate: sending one link to two people and then
+// wanting to cut off one of them is the normal case, and it is only possible
+// if they were different links to begin with. Revocation is per link.
+model ReportShare {
+  id         String    @id @default(cuid())
+  session_id String
+  session    Session   @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  token      String    @unique // random, URL-safe — the whole of the authorisation
+  created_by String
+  creator    User      @relation(fields: [created_by], references: [id], onDelete: Cascade)
+
+  created_at DateTime  @default(now())
+  // Set, never deleted: a revoked link stays on the list so the manager can see
+  // that it existed and is now dead, rather than wondering where it went.
+  revoked_at DateTime?
+
+  @@index([session_id])
+  @@map("report_shares")
+}
 
 model Report {
   id          String    @id @default(cuid())
