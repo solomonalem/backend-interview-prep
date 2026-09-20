@@ -42,11 +42,12 @@ export function CodeSnippet({
     };
   }, [code, language]);
 
-  // "Python" when they picked one; "Code" when they left it on Auto and we have
-  // nothing better. A detected language is labelled as detected rather than
-  // stated — we are guessing, and saying so costs one word.
-  const declared = language && language !== 'auto' ? snippetLanguageLabel(language) : null;
-  const label = declared ?? (result?.detected ? `Code · looks like ${result.detected}` : 'Code');
+  // "Python" when they picked one, plain "Code" when they left it on Auto.
+  // Auto-detection still runs — it is what colours the text — but what it
+  // guessed is never printed: it picks the grammar that highlights best, not
+  // the language, and a wrong language stated in a hiring report is worse than
+  // no language at all.
+  const label = language && language !== 'auto' ? snippetLanguageLabel(language) : 'Code';
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200">
@@ -58,7 +59,10 @@ export function CodeSnippet({
       </div>
       {/* Its own horizontal scroller: a long line in a sketch must not push the
           report's layout sideways. */}
-      <pre className="overflow-x-auto bg-white px-3.5 py-3 text-[13px] leading-relaxed">
+      {/* Ligatures off: an interviewer is reading the characters the candidate
+          actually typed, and a font that draws "=>" as a single arrow glyph
+          quietly edits them. */}
+      <pre className="overflow-x-auto bg-white px-3.5 py-3 text-[13px] leading-relaxed [font-variant-ligatures:none]">
         {result ? (
           // hljs escapes its own output, so this is the library's markup around
           // the candidate's text — not the candidate's markup.

@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent } from 'react';
+import { useLayoutEffect, useRef, type KeyboardEvent } from 'react';
 import { Code2, X } from 'lucide-react';
 import {
   SNIPPET_LANGUAGES,
@@ -50,6 +50,19 @@ export function CodeSketchField({
   onActivity,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  // Where the caret must end up after a Tab. The value is controlled by the
+  // page, so the DOM does not carry the new text until React commits it —
+  // setting the selection any earlier (in the handler, or in a rAF that can
+  // run before the commit) silently clamps to the old value's length and the
+  // caret lands at the end of the box instead.
+  const caretAfterCommit = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const pos = caretAfterCommit.current;
+    if (pos === null) return;
+    caretAfterCommit.current = null;
+    ref.current?.setSelectionRange(pos, pos);
+  }, [code]);
 
   if (!open) {
     return (
@@ -76,14 +89,8 @@ export function CodeSketchField({
     e.preventDefault();
     const el = e.currentTarget;
     const { selectionStart: start, selectionEnd: end } = el;
-    const next = `${code.slice(0, start)}  ${code.slice(end)}`;
-    onCodeChange(next);
-    // After React re-renders with the new value — otherwise the caret snaps to
-    // the end of the text and every Tab loses the candidate's place.
-    requestAnimationFrame(() => {
-      const node = ref.current;
-      if (node) node.selectionStart = node.selectionEnd = start + 2;
-    });
+    caretAfterCommit.current = start + 2;
+    onCodeChange(`${code.slice(0, start)}  ${code.slice(end)}`);
     onActivity();
   };
 
@@ -145,7 +152,9 @@ export function CodeSketchField({
         }}
         placeholder={'function example() {\n  // sketch the idea — it does not have to run\n}'}
         className={cn(
-          'w-full resize-y rounded-lg border bg-white px-3 py-2.5 font-mono text-[13px] leading-relaxed text-slate-800 shadow-sm transition placeholder:text-slate-300 focus:outline-none focus:ring-2',
+          // Ligatures off here too, so what the candidate sees while typing is
+          // what the report will show them having typed.
+          'w-full resize-y rounded-lg border bg-white px-3 py-2.5 font-mono text-[13px] leading-relaxed text-slate-800 shadow-sm transition [font-variant-ligatures:none] placeholder:text-slate-300 focus:outline-none focus:ring-2',
           over
             ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-100'
             : 'border-slate-200 focus:border-brand-400 focus:ring-brand-100',

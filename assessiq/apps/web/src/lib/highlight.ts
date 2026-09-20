@@ -83,9 +83,17 @@ async function load(): Promise<HLJSApi> {
 export interface HighlightResult {
   /** Escaped HTML with hljs token spans. Safe to inject — hljs escapes it. */
   html: string;
-  /** What was detected, when the sketch arrived with no language declared. */
-  detected: string | null;
 }
+
+/**
+ * What auto-detection guessed is deliberately NOT returned.
+ *
+ * `highlightAuto` picks the grammar that colours the text best, which is not
+ * the same as identifying the language: a short JavaScript sketch scores
+ * happily as C++, and the colours still come out right. Printing that guess in
+ * a hiring report would state something false about the candidate's submission
+ * to buy a word of decoration, so an undeclared sketch is labelled "Code".
+ */
 
 /**
  * Highlight one sketch. Returns null when the caller should just render the
@@ -103,10 +111,9 @@ export async function highlightSnippet(
     const hljs = await load();
     if (language && language !== 'auto' && (SNIPPET_LANGUAGES as readonly string[]).includes(language)) {
       const res = hljs.highlight(code, { language, ignoreIllegals: true });
-      return { html: res.value, detected: null };
+      return { html: res.value };
     }
-    const res = hljs.highlightAuto(code);
-    return { html: res.value, detected: res.language ?? null };
+    return { html: hljs.highlightAuto(code).value };
   } catch {
     return null;
   }
