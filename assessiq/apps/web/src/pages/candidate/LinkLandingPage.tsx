@@ -30,15 +30,28 @@ export default function LinkLandingPage() {
   const [ready, setReady] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  // True when there is an unfinished session behind this link: they are coming
+  // back, not starting, and the button should say so.
+  const [resumable, setResumable] = useState(false);
 
   useEffect(() => {
     if (!token) return;
     sessionsApi
       .validateLink(token)
-      .then((r) => setMeta(r.assessment))
+      .then((r) => {
+        setMeta(r.assessment);
+        setResumable(r.resumable);
+      })
       .catch((err) => {
         if (err instanceof ApiRequestError && err.code === 'LINK_USED') {
           setLoadError('This link has already been used. Each link works once.');
+        } else if (err instanceof ApiRequestError && err.code === 'LINK_EXPIRED') {
+          // Its own message. An expired invitation is a real one that ran out,
+          // and telling someone it is "invalid" sends them looking for a typo
+          // instead of back to the person who sent it.
+          setLoadError(
+            'This assessment link has expired — contact the person who sent it for a new one.',
+          );
         } else {
           setLoadError('This link is invalid or has expired. Ask your interviewer for a new one.');
         }
@@ -182,6 +195,15 @@ export default function LinkLandingPage() {
             )}
 
             <div className="border-t border-slate-100 pt-6 space-y-5">
+              {/* Coming back, not starting. Said out loud because the timer has
+                  been running the whole time they were away, and finding that
+                  out from a countdown is a nasty surprise. */}
+              {resumable && (
+                <p className="rounded-lg border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-sm text-sky-900">
+                  You've already started this assessment. Continuing takes you back to where you
+                  left off, with anything you had typed — the timer has kept running.
+                </p>
+              )}
               <label className="flex items-start gap-3 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -189,7 +211,9 @@ export default function LinkLandingPage() {
                   onChange={(e) => setReady(e.target.checked)}
                   className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-400 cursor-pointer"
                 />
-                <span className="text-sm text-slate-700">I understand and I'm ready to begin.</span>
+                <span className="text-sm text-slate-700">
+                  {resumable ? "I understand and I'm ready to continue." : "I understand and I'm ready to begin."}
+                </span>
               </label>
 
               {startError && (
@@ -200,7 +224,7 @@ export default function LinkLandingPage() {
 
               <Button size="lg" onClick={begin} disabled={!ready || starting} className="w-full">
                 {starting ? <Spinner className="border-white/40 border-t-white" /> : null}
-                {starting ? 'Starting…' : 'Start assessment'}
+                {starting ? (resumable ? 'Resuming…' : 'Starting…') : resumable ? 'Continue where you left off' : 'Start assessment'}
                 {!starting && <ArrowRight size={18} />}
               </Button>
             </div>

@@ -140,6 +140,11 @@ model Assessment {
   // NEW assessment to `flagged_only` instead. The two defaults are deliberately
   // different — one is about not changing the past, the other about what a
   // manager should get when they don't express a preference.
+  // Days of silence before the system nudges a candidate who never started.
+  // NULL is off, and off is the default: an assessment that emails people on
+  // its own is a decision a manager makes, not one they inherit.
+  auto_reminder_days Int?
+
   probes_mode        ProbesMode @default(off)
   // Seconds a candidate gets to defend one answer. 60-180, validated at the
   // API; a defense is meant to be a reflex, not a second essay.
@@ -224,7 +229,20 @@ model AssessmentLink {
   // exactly as every link did before records existed.
   candidate_id    String?
   candidate       Candidate?  @relation(fields: [candidate_id], references: [id], onDelete: SetNull)
-  expires_at      DateTime
+
+  // NULL means no expiry. Nullable as of this wave: the column has always
+  // existed and always been enforced, but a manager had no way to say "this
+  // one should stay open", and 7 days of silence is not consent to a closed
+  // door. An expiry only gates STARTING — a session already in progress is
+  // governed by its own timer and is never cut off by this.
+  expires_at      DateTime?
+
+  // Manual nudges. Both are stamps rather than counters: what matters is
+  // whether we have already written to this person, and when.
+  reminder_sent_at      DateTime?
+  // The automatic sweep writes here and checks it first, which is the whole of
+  // the no-spam rule: at most one automatic reminder per link, ever.
+  auto_reminder_sent_at DateTime?
   opened_at       DateTime?   // set when candidate first clicks link
   session_id      String?     @unique  // set when session is created from this link
 

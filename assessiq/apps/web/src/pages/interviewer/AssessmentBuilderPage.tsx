@@ -16,6 +16,7 @@ import {
   History,
   FileCode2,
   MessageCircleQuestion,
+  BellRing,
 } from 'lucide-react';
 import type {
   CreateAssessmentRequest,
@@ -29,6 +30,7 @@ import type {
   QuestionType,
 } from '@assessiq/types';
 import {
+  DEFAULT_AUTO_REMINDER_DAYS,
   DEFAULT_PROBE_SECONDS,
   DEFAULT_PROBES_MODE,
   DIFFICULTIES,
@@ -255,6 +257,10 @@ export default function AssessmentBuilderPage() {
   const [detectIdle, setDetectIdle] = useState(false);
   const [flagThreshold, setFlagThreshold] = useState(3);
   const [confidenceRating, setConfidenceRating] = useState(true);
+  // Off unless the manager turns it on: an assessment that emails people by
+  // itself is a decision, not something to inherit from a default.
+  const [autoReminders, setAutoReminders] = useState(false);
+  const [reminderDays, setReminderDays] = useState(DEFAULT_AUTO_REMINDER_DAYS);
   const [probesMode, setProbesMode] = useState<ProbesMode>(DEFAULT_PROBES_MODE);
   const [probeSeconds, setProbeSeconds] = useState(DEFAULT_PROBE_SECONDS);
 
@@ -586,6 +592,7 @@ export default function AssessmentBuilderPage() {
         tab_switch_flag_threshold: flagThreshold,
       },
       confidence_rating_enabled: confidenceRating,
+      auto_reminder_days: autoReminders ? reminderDays : null,
       probes_mode: probesMode,
       probe_time_seconds: probeSeconds,
     };
@@ -1282,6 +1289,42 @@ export default function AssessmentBuilderPage() {
                 onChange={setConfidenceRating}
                 label="Ask for confidence rating"
               />
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <h3 className="flex items-center gap-2 font-semibold text-slate-800">
+                <BellRing size={16} className="text-brand-500" /> Reminders
+              </h3>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <Toggle
+                checked={autoReminders}
+                onChange={setAutoReminders}
+                label="Remind candidates who haven't started"
+              />
+              {autoReminders && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-600">after</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={reminderDays}
+                    onChange={(e) => setReminderDays(Number(e.target.value) || 1)}
+                    className="w-20 text-center tabular"
+                  />
+                  <span className="text-sm text-slate-600">days</span>
+                </div>
+              )}
+              {/* Said plainly because "automatic email" is the kind of feature
+                  people need to trust: one message, then silence. */}
+              <p className="text-xs text-slate-400">
+                {autoReminders
+                  ? 'One reminder per candidate, once — never a second automatic email. You can still send more by hand.'
+                  : 'Nothing is sent automatically. You can always remind someone by hand from their link.'}
+              </p>
             </CardBody>
           </Card>
 

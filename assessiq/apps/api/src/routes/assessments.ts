@@ -2,12 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
+import { sendManualReminder } from '../services/reminder.service.js';
 import {
   createAssessment,
   createLink,
   getAssessmentDetail,
   listAssessments,
-  updateLinkLabel,
+  updateLink,
 } from '../services/assessment.service.js';
 
 export const assessmentsRouter = Router();
@@ -27,6 +28,7 @@ const createSchema = z.object({
   timer_seconds: z.number().int().positive().optional(),
   proctoring_config: proctoringSchema.optional(),
   confidence_rating_enabled: z.boolean(),
+  auto_reminder_days: z.number().int().positive().max(30).nullable().optional(),
   probes_mode: z.enum(['off', 'flagged_only', 'all']).optional(),
   // Clamped in the service rather than rejected here — see clampProbeSeconds.
   probe_time_seconds: z.number().int().positive().optional(),
@@ -70,7 +72,8 @@ const createLinkSchema = z.object({
   // Both stay optional — the quick "just send me a link" path must survive.
   candidate_label: z.string().min(1).optional(),
   candidate_email: z.string().email().optional(),
-  expires_in_hours: z.number().int().positive().optional(),
+  // Explicit null is meaningful: "no expiry", as opposed to "didn't say".
+  expires_in_days: z.number().int().positive().max(365).nullable().optional(),
   confirm_duplicate: z.boolean().optional(),
 });
 
@@ -90,11 +93,14 @@ assessmentsRouter.post(
   }),
 );
 
-// PATCH /assessments/:id/links/:linkId — rename a candidate link.
-// The label is the only thing identifying a candidate (they have no account),
-// so it has to be fixable after the link is minted.
+// PATCH /assessments/:id/links/:linkId — rename a candidate link, or change
+// when it closes. The label is the only thing identifying a candidate (they
+// have no account), so it has to be fixable after the link is minted; the
+// expiry has to be extendable because an invitation that ran out is a normal
+// thing to want to re-open.
 const updateLinkSchema = z.object({
-  candidate_label: z.string().nullable(),
+  candidate_label: z.string().nullable().optional(),
+  expires_in_days: z.number().int().positive().max(365).nullable().optional(),
 });
 
 assessmentsRouter.patch(
@@ -104,7 +110,21 @@ assessmentsRouter.patch(
     const { id, linkId } = req.params;
     if (!id || !linkId) throw new AppError(400, 'VALIDATION', 'assessment and link id are required');
     const parsed = updateLinkSchema.safeParse(req.body ?? {});
-    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'candidate_label is required');
-    res.json(await updateLinkLabel(req.interviewer!.id, id, linkId, parsed.data.candidate_label));
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION', 'candidate_label or expires_in_days is required');
+    }
+    res.json(await updateLink(req.interviewer!.id, id, linkId, parsed.data));
+  }),
+);
+
+// POST /assessments/:id/links/:linkId/reminder — nudge a candidate who hasn't
+// started. Manual: the manager decides, and the result says what happened.
+assessmentsRouter.post(
+  '/:id/links/:linkId/reminder',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id, linkId } = req.params;
+    if (!id || !linkId) throw new AppError(400, 'VALIDATION', 'assessment and link id are required');
+    res.json(await sendManualReminder(req.interviewer!.id, id, linkId));
   }),
 );

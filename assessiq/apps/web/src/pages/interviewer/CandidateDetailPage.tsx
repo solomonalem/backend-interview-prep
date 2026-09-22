@@ -37,6 +37,14 @@ const statusMeta: Record<LinkStatus, { label: string; tone: string }> = {
   expired: { label: 'Expired', tone: 'bg-rose-100 text-rose-600' },
 };
 
+/** "expires in 4 days" / "expired" — the two states worth a reader's time. */
+function expiryLabel(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return 'expired';
+  const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
+  return days === 1 ? 'expires within a day' : `expires in ${days} days`;
+}
+
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
@@ -58,7 +66,14 @@ function JourneyRow({ entry }: { entry: CandidateJourneyEntry }) {
         <span className="block truncate text-sm font-semibold text-slate-800">
           {entry.assessment_title}
         </span>
-        <span className="block text-xs text-slate-400">sent {fmtDate(entry.sent_at)}</span>
+        <span className="block text-xs text-slate-400">
+          sent {fmtDate(entry.sent_at)}
+          {/* Only while it still matters — a link that was used has nothing
+              left to expire. */}
+          {!entry.session_id && entry.expires_at && (
+            <> · {expiryLabel(entry.expires_at)}</>
+          )}
+        </span>
       </span>
 
       <span className={cn('rounded-full px-2.5 py-0.5 text-[11px] font-semibold', meta.tone)}>

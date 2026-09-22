@@ -19,7 +19,8 @@ const escapeHtml = (s: string) =>
  */
 export async function sendCandidateInvite(
   to: string,
-  data: { assessmentTitle: string; fromName: string; url: string; expiresAt: string },
+  /** `expiresAt` is null when the link never expires — see the body below. */
+  data: { assessmentTitle: string; fromName: string; url: string; expiresAt: string | null },
 ): Promise<{ status: InviteEmailStatus; error?: string }> {
   const subject = `You've been invited to a technical assessment: ${data.assessmentTitle}`;
   if (!resend) {
@@ -27,10 +28,14 @@ export async function sendCandidateInvite(
     return { status: 'skipped_not_configured' };
   }
 
-  const expires = new Date(data.expiresAt).toLocaleString('en-GB', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  // Only stated when true. A link with no expiry must not be described as
+  // expiring — inventing a deadline to make someone hurry is a small lie.
+  const expires = data.expiresAt
+    ? new Date(data.expiresAt).toLocaleString('en-GB', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })
+    : null;
 
   try {
     const res = await resend.emails.send({
@@ -45,7 +50,7 @@ export async function sendCandidateInvite(
     <a href="${data.url}" style="background:#4f46e5;color:#fff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Start the assessment</a>
   </p>
   <p style="color:#64748b;font-size:13px">
-    This link is personal to you and expires on ${escapeHtml(expires)}.<br>
+    This link is personal to you${expires ? ` and expires on ${escapeHtml(expires)}` : ''}.<br>
     If the button doesn't work, paste this into your browser:<br>
     <span style="word-break:break-all">${data.url}</span>
   </p>
@@ -82,4 +87,59 @@ export async function sendReportReady(
 <p>Overall: <strong>${data.overallPct}%</strong> — ${data.verdict.replace(/_/g, ' ')}</p>
 <p><a href="${data.reportUrl}">View the full report</a></p>`,
   });
+}
+
+/**
+ * A nudge for someone who was invited and never started.
+ *
+ * Same contract as the invite: returns a status rather than throwing, because
+ * failing to send a reminder must never break the thing that triggered it —
+ * a manager clicking a button, or a nightly sweep walking a list.
+ */
+export async function sendAssessmentReminder(
+  to: string,
+  data: { assessmentTitle: string; fromName: string; url: string; expiresAt: string | null },
+): Promise<{ status: InviteEmailStatus; error?: string }> {
+  const subject = `Reminder: your technical assessment is waiting — ${data.assessmentTitle}`;
+  if (!resend) {
+    console.log(`[email] (stub, no RESEND_API_KEY) → ${to}: ${subject} · ${data.url}`);
+    return { status: 'skipped_not_configured' };
+  }
+
+  // Only mentioned when there is one. Inventing urgency for a link that never
+  // expires would be a small lie told to make someone hurry.
+  const expiryLine = data.expiresAt
+    ? `<p style="color:#64748b;font-size:13px">This link expires on ${escapeHtml(
+        new Date(data.expiresAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }),
+      )}.</p>`
+    : '';
+
+  try {
+    const res = await resend.emails.send({
+      from: 'AssessIQ <invites@assessiq.app>',
+      to,
+      subject,
+      html: `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;color:#1e293b">
+  <p>Hi,</p>
+  <p>Just a reminder that <strong>${escapeHtml(data.fromName)}</strong> invited you to complete a technical assessment, and it is still waiting for you:</p>
+  <p style="font-size:17px;font-weight:600;margin:18px 0">${escapeHtml(data.assessmentTitle)}</p>
+  <p style="margin:24px 0">
+    <a href="${data.url}" style="background:#4f46e5;color:#fff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Start the assessment</a>
+  </p>
+  ${expiryLine}
+  <p style="color:#64748b;font-size:13px">
+    If the button doesn't work, paste this into your browser:<br>
+    <span style="word-break:break-all">${data.url}</span>
+  </p>
+</div>`,
+    });
+    if (res.error) {
+      console.error('[email] reminder rejected by provider:', res.error);
+      return { status: 'failed', error: res.error.message ?? 'The email provider rejected it.' };
+    }
+    return { status: 'sent' };
+  } catch (err) {
+    console.error('[email] reminder failed:', err);
+    return { status: 'failed', error: (err as Error).message };
+  }
 }

@@ -26,6 +26,11 @@ import {
   submitProbeAnswer,
 } from './probe.service.js';
 
+/** null means no expiry: the link stays open until it is used. */
+function linkHasExpired(expiresAt: Date | null): boolean {
+  return expiresAt !== null && expiresAt.getTime() < Date.now();
+}
+
 function proctoringEnabled(config: unknown): boolean {
   const pc = config as ProctoringConfig | null;
   return Boolean(
@@ -49,8 +54,11 @@ export async function validateLink(token: string): Promise<LinkValidateResponse>
   });
 
   if (!link) throw new AppError(404, 'LINK_INVALID', 'Link not found or expired');
-  if (link.expires_at.getTime() < Date.now()) {
-    throw new AppError(410, 'LINK_INVALID', 'Link not found or expired');
+  // A distinct code from "we have never heard of this link": an expired link
+  // is a real invitation that ran out, and the candidate should be told that
+  // rather than left wondering whether they mistyped something.
+  if (linkHasExpired(link.expires_at)) {
+    throw new AppError(410, 'LINK_EXPIRED', 'This assessment link has expired');
   }
 
   // An UNFINISHED session on this link is a candidate coming back, not a link
@@ -137,8 +145,12 @@ export async function startSession(linkToken: string): Promise<StartSessionRespo
   });
 
   if (!link) throw new AppError(404, 'LINK_INVALID', 'Link not found or expired');
-  if (link.expires_at.getTime() < Date.now()) {
-    throw new AppError(410, 'LINK_INVALID', 'Link not found or expired');
+  // Checked before the resume branch below on purpose: an expiry gates
+  // STARTING. Someone already in progress is governed by the session timer and
+  // is never cut off mid-assessment by this, which is why the resume path is
+  // reached only when the link itself is still open.
+  if (linkHasExpired(link.expires_at)) {
+    throw new AppError(410, 'LINK_EXPIRED', 'This assessment link has expired');
   }
 
   const a = link.assessment;

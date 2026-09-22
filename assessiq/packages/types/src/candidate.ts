@@ -42,7 +42,8 @@ export interface CandidateJourneyEntry {
   assessment_id: string;
   assessment_title: string;
   sent_at: string;
-  expires_at: string;
+  /** null means the link never expires. */
+  expires_at: string | null;
   status: LinkStatus;
   /** The invite URL, ready to copy. */
   url: string;
