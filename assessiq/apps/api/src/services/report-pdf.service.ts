@@ -141,6 +141,46 @@ function questionBlock(q: ReportQuestion): string {
   </section>`;
 }
 
+/**
+ * The live-round guide, when one has been generated.
+ *
+ * Renders from whatever the ReportView carries — which is null on a shared
+ * report, so the shared export cannot contain it. The exclusion lives in the
+ * report builder, not here; this function simply has nothing to print.
+ */
+function interviewKitBlock(report: ReportView): string {
+  const kit = report.interview_kit;
+  if (!kit) return '';
+
+  const questions = kit.questions
+    .map(
+      (q, i) => `<div class="kit-q">
+        <p class="kit-question">${i + 1}. ${esc(q.question)}</p>
+        ${q.why ? `<p class="reason"><strong>Why:</strong> ${esc(q.why)}</p>` : ''}
+        ${q.strong_answer ? `<p class="reason"><strong>Strong:</strong> ${esc(q.strong_answer)}</p>` : ''}
+        ${q.weak_answer ? `<p class="reason"><strong>Weak:</strong> ${esc(q.weak_answer)}</p>` : ''}
+      </div>`,
+    )
+    .join('');
+
+  const flags = kit.red_flags.length
+    ? `<p class="label mt">Listen for</p><ul>${kit.red_flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`
+    : '';
+  const agenda = kit.agenda.length
+    ? `<p class="label mt">Suggested 30 minutes</p><ul>${kit.agenda
+        .map((a) => `<li><strong>${a.minutes} min</strong> — ${esc(a.item)}</li>`)
+        .join('')}</ul>`
+    : '';
+
+  return `<section class="q-block kit">
+    <p class="label">Live interview kit — for the interviewer</p>
+    <p class="muted">Prepared from this report. Every question below is tied to something in it.</p>
+    ${questions}
+    ${flags}
+    ${agenda}
+  </section>`;
+}
+
 function template(report: ReportView): string {
   const { session, assessment, overall, proctoring, questions } = report;
   const ov = overall.override;
@@ -191,6 +231,9 @@ function template(report: ReportView): string {
   .reason { margin: 3px 0 0; color: #475569; }
   .probe-rec { margin-top: 6px; padding: 6px 8px; background: #eef2ff; border-radius: 6px; }
   .foot { color: #94a3b8; font-size: 9px; margin-top: 14px; }
+  .kit { border-color: #c7d2fe; background: #eef2ff; }
+  .kit-q { margin-bottom: 7px; }
+  .kit-question { font-weight: 600; margin: 0 0 2px; }
 </style></head>
 <body>
   <h1>${esc(session.candidate_label ?? 'Candidate')}</h1>
@@ -226,6 +269,8 @@ function template(report: ReportView): string {
   </div>
 
   ${questions.map(questionBlock).join('')}
+
+  ${interviewKitBlock(report)}
 
   <p class="foot">Generated ${esc(fmtDate(new Date().toISOString()))} · Scores are rubric-based and advisory; the hiring decision is the interviewer's.</p>
 </body></html>`;

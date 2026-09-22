@@ -40,6 +40,8 @@ const DRAFT_SELECT = {
   senior_signal_display: true,
   trap_display: true,
   source: true,
+  tags: true,
+  is_active: true,
   // Provenance for the review panel: the manager judging a grounded question
   // needs to see what motivated it — a finding in their codebase, or the
   // document they supplied.
@@ -865,6 +867,26 @@ async function loadDraft(id: string, interviewerId: string) {
 }
 
 /**
+ * Load ANY question with its full rubric — draft or vetted.
+ *
+ * `loadDraft` refuses anything already reviewed, which is right for the review
+ * panel and wrong for editing: a vetted question whose rubric turned out too
+ * harsh should be fixable without being un-vetted first. Ownership is not
+ * checked because the bank itself is shared — every manager already sees every
+ * question through GET /questions, and edit follows the same rule. If the bank
+ * ever becomes per-owner, this needs the same scoping as everything else.
+ */
+export async function loadQuestionForReview(
+  id: string,
+  interviewerId: string,
+): Promise<QuestionDraft> {
+  const q = await prisma.question.findUnique({ where: { id }, select: DRAFT_SELECT });
+  if (!q) throw new AppError(404, 'QUESTION_NOT_FOUND', 'Question not found');
+  void interviewerId;
+  return toDraft(q);
+}
+
+/**
  * Load a draft with its full rubric for review. Separate from GET /questions/:id,
  * which deliberately never returns the private `_guide` columns.
  */
@@ -1072,6 +1094,10 @@ export async function buildQuestionPool(
     domain: q.domain,
     status: q.status,
     source: q.source,
+    // A fresh draft has no tags yet; the shape wants the field regardless.
+    tags: [],
+    is_active: true,
+    created_at: new Date().toISOString(),
     core_answer_display: q.core_answer_display,
     senior_signal_display: q.senior_signal_display,
     trap_display: q.trap_display,

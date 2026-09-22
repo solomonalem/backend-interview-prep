@@ -218,6 +218,9 @@ async function buildReport(
             orderBy: { position: 'asc' },
             select: {
               position: true,
+              // What was actually asked. An edit to the bank afterwards must
+              // not change what this report says the candidate answered.
+              snapshot_text: true,
               question: { select: { id: true, text: true, topic: true, difficulty: true } },
             },
           },
@@ -332,7 +335,7 @@ async function buildReport(
       questions: (session.assessment.questions.length
         ? session.assessment.questions.map((aq) => ({
             position: aq.position,
-            question: aq.question,
+            question: { ...aq.question, text: aq.snapshot_text ?? aq.question.text },
             answer: answersByQuestion.get(aq.question.id) ?? null,
           }))
         : session.answers.map((a) => ({
@@ -388,6 +391,14 @@ async function buildReport(
           confidence_flag: a?.score?.confidence_flag ?? null,
         };
       }),
+      // WITHHELD FROM A SHARED VIEW, deliberately. The kit is the questions
+      // the interviewer plans to ask next; handing it to whoever holds a share
+      // link would leak the plan to the panel — and, if the link ever reached
+      // the candidate, to them. The owner path is the only one that sees it.
+      interview_kit:
+        viewer.kind === 'owner'
+          ? ((session.interview_kit as unknown as ReportView['interview_kit']) ?? null)
+          : null,
       pdf_url: session.report.pdf_url,
     },
   };

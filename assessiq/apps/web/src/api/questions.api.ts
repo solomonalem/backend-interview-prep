@@ -11,7 +11,10 @@ import type {
   GroundedQuestionsResponse,
   GenerateQuestionsRequest,
   GenerateQuestionsResponse,
+  ImportQuestionsRequest,
+  ImportQuestionsResponse,
   QuestionDraft,
+  QuestionExport,
   QuestionFilters,
   QuestionListResponse,
   QuestionMatchFilters,
@@ -20,6 +23,7 @@ import type {
   QuestionPoolResponse,
   PreviouslyUsedResponse,
   RefineQuestionRequest,
+  UpdateQuestionRequest,
 } from '@assessiq/types';
 import { api } from './client';
 
@@ -35,6 +39,21 @@ function toQuery(f: QuestionFilters): string {
 export const questionsApi = {
   list: (filters: QuestionFilters = {}) =>
     api.get<QuestionListResponse>(`/questions${toQuery(filters)}`),
+
+  /** The bank's own list: same endpoint, plus the per-question usage stats. */
+  bank: (filters: QuestionFilters = {}) =>
+    api.get<QuestionListResponse>(`/questions${toQuery({ ...filters, usage: true } as QuestionFilters)}`),
+
+  /** Question + full rubric, for editing. Interviewer-only. */
+  full: (id: string) => api.get<QuestionDraft>(`/questions/${id}/full`),
+
+  /** Edit in place, tag, archive or restore. Never changes status. */
+  update: (id: string, body: UpdateQuestionRequest) =>
+    api.patch<QuestionDraft>(`/questions/${id}`, body),
+
+  exportAll: () => api.download('/questions/export', 'assessiq-questions.json'),
+  import: (body: ImportQuestionsRequest) =>
+    api.post<ImportQuestionsResponse>('/questions/import', body),
 
   // Loose builder retrieval — array params go over the wire comma-separated.
   match: (f: QuestionMatchFilters) => {

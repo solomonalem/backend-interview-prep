@@ -5,6 +5,7 @@ import { authRouter } from './routes/auth.js';
 import { questionsRouter } from './routes/questions.js';
 import { assessmentsRouter } from './routes/assessments.js';
 import { candidatesRouter } from './routes/candidates.js';
+import { templatesRouter } from './routes/templates.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { reportsRouter } from './routes/reports.js';
 import { studyRouter } from './routes/study.js';
@@ -39,6 +40,7 @@ export function createApp(): Express {
   api.use('/questions', questionsRouter);
   api.use('/assessments', assessmentsRouter);
   api.use('/candidates', candidatesRouter);
+  api.use('/templates', templatesRouter);
   api.use('/sessions', sessionsRouter);
   api.use('/reports', reportsRouter);
   api.use('/study', studyRouter);

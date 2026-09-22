@@ -186,6 +186,11 @@ export interface ReportView {
     context_note: string;
   };
   questions: ReportQuestion[];
+  /**
+   * The live-round guide, when one has been generated. Always null on a
+   * shared view — see the interview kit types below.
+   */
+  interview_kit: InterviewKit | null;
   pdf_url: string | null;
 }
 
@@ -209,4 +214,36 @@ export interface ReportShareSummary {
 
 export interface ReportShareListResponse {
   shares: ReportShareSummary[];
+}
+
+// ── Live interview kit ───────────────────────────────────────────────────────
+// A bridge from the async report to the live round: what to ask this candidate,
+// given what this report actually says about them.
+//
+// INTERVIEWER-ONLY, and the type says so because the enforcement is elsewhere:
+// the shared report builder never populates it. A panel holding a share link
+// must not receive the questions their interviewer plans to ask.
+
+export interface InterviewKitQuestion {
+  /** The question to ask in the live round. */
+  question: string;
+  /** The specific thing in THIS report that motivates it. */
+  why: string;
+  /** Short — what a convincing answer sounds like. */
+  strong_answer: string;
+  /** Short — what a weak one sounds like. */
+  weak_answer: string;
+}
+
+export interface InterviewKitAgendaItem {
+  minutes: number;
+  item: string;
+}
+
+export interface InterviewKit {
+  questions: InterviewKitQuestion[];
+  red_flags: string[];
+  agenda: InterviewKitAgendaItem[];
+  generated_at: string;
+  model_used: string;
 }

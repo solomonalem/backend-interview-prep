@@ -22,11 +22,13 @@ import {
   getDraftForReview,
   refineDraft,
   rejectDraft,
+  loadQuestionForReview,
 } from '../services/generation.service.js';
 import {
   checkDocumentSufficiency,
   queueGenerationFromDocument,
 } from '../services/document.service.js';
+import { exportQuestions, importQuestions, updateQuestion } from '../services/bank.service.js';
 import { extractDocumentText } from '../lib/document-extract.js';
 import { DOCUMENT_MAX_CHARS, DOCUMENT_MAX_UPLOAD_BYTES } from '@assessiq/types';
 
@@ -39,6 +41,20 @@ const filterSchema = z.object({
   type: z.enum(['conceptual', 'scenario', 'rca', 'design', 'behavioral']).optional(),
   domain: z.string().optional(),
   search: z.string().optional(),
+  status: z.enum(['vetted', 'draft']).optional(),
+  tag: z.string().optional(),
+  // Query strings carry text, so the flag arrives as "true"/"false".
+  archived: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
+  sort: z.enum(['newest', 'oldest', 'most_used', 'topic']).optional(),
+  // Usage stats cost two extra queries per page, so the bank asks for them
+  // and the builder's search — which fires on every keystroke — does not.
+  usage: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
   page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
 });
@@ -50,7 +66,8 @@ questionsRouter.get(
   asyncHandler(async (req, res) => {
     const parsed = filterSchema.safeParse(req.query);
     if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid query parameters');
-    res.json(await listQuestions(parsed.data));
+    const { usage, ...filters } = parsed.data;
+    res.json(await listQuestions(filters, { withUsage: usage }));
   }),
 );
 
@@ -390,6 +407,103 @@ questionsRouter.post(
     if (!id) throw new AppError(400, 'VALIDATION', 'question id is required');
     await rejectDraft(id, req.interviewer!.id);
     res.status(204).end();
+  }),
+);
+
+// GET /questions/export — the manager's own questions, whole rubric included.
+// Declared before /:id so "export" is not read as a question id.
+questionsRouter.get(
+  '/export',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const data = await exportQuestions(req.interviewer!.id);
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="assessiq-questions-${new Date().toISOString().slice(0, 10)}.json"`,
+    );
+    res.end(JSON.stringify(data, null, 2));
+  }),
+);
+
+const importSchema = z.object({
+  questions: z
+    .array(
+      z.object({
+        text: z.string(),
+        topic: z.string(),
+        difficulty: z.enum(['junior', 'mid', 'senior', 'staff']),
+        type: z.enum(['conceptual', 'scenario', 'rca', 'design', 'behavioral']),
+        domain: z.string().nullable().optional(),
+        tags: z.array(z.string()).optional(),
+        core_answer_guide: z.string(),
+        senior_signal_guide: z.string(),
+        trap_guide: z.string(),
+        evidence_guide: z.string(),
+        core_answer_display: z.string().optional(),
+        senior_signal_display: z.string().optional(),
+        trap_display: z.string().optional(),
+      }),
+    )
+    .max(500),
+});
+
+// POST /questions/import — lands as DRAFTS, always. See bank.service.
+questionsRouter.post(
+  '/import',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = importSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION', 'That file is not a question export.');
+    }
+    res.json(
+      await importQuestions(
+        parsed.data as unknown as Parameters<typeof importQuestions>[0],
+        req.interviewer!.id,
+      ),
+    );
+  }),
+);
+
+const updateSchema = z.object({
+  text: z.string().optional(),
+  topic: z.string().optional(),
+  difficulty: z.enum(['junior', 'mid', 'senior', 'staff']).optional(),
+  type: z.enum(['conceptual', 'scenario', 'rca', 'design', 'behavioral']).optional(),
+  core_answer_guide: z.string().optional(),
+  senior_signal_guide: z.string().optional(),
+  trap_guide: z.string().optional(),
+  evidence_guide: z.string().optional(),
+  core_answer_display: z.string().optional(),
+  senior_signal_display: z.string().optional(),
+  trap_display: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  is_active: z.boolean().optional(),
+});
+
+// PATCH /questions/:id — edit in place, archive, or restore. Never changes
+// status: a vetted question stays vetted, a draft still needs reviewing.
+questionsRouter.patch(
+  '/:id',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'question id is required');
+    const parsed = updateSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid edits');
+    res.json(await updateQuestion(id, parsed.data, req.interviewer!.id));
+  }),
+);
+
+// GET /questions/:id/full — question + rubric, for the edit panel
+questionsRouter.get(
+  '/:id/full',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'question id is required');
+    res.json(await loadQuestionForReview(id, req.interviewer!.id));
   }),
 );
 

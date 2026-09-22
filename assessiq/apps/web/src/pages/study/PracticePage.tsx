@@ -11,8 +11,14 @@ import {
   TrendingUp,
   RotateCcw,
   AlertTriangle,
+  MessageCircleQuestion,
 } from 'lucide-react';
-import type { QuestionListItem, PracticeResponse } from '@assessiq/types';
+import type {
+  QuestionListItem,
+  PracticeDefenseResponse,
+  PracticeResponse,
+} from '@assessiq/types';
+import { PRACTICE_PROBE_SECONDS } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
 import { studyApi } from '../../api/study.api';
 import { ApiRequestError } from '../../api/client';
@@ -45,9 +51,20 @@ export default function PracticePage() {
   const [answer, setAnswer] = useState('');
   const [seconds, setSeconds] = useState(0);
   const [running, setRunning] = useState(false);
-  const [phase, setPhase] = useState<'writing' | 'scoring' | 'result'>('writing');
+  const [phase, setPhase] = useState<'writing' | 'scoring' | 'probe' | 'result'>('writing');
   const [result, setResult] = useState<PracticeResponse | null>(null);
   const [scoreError, setScoreError] = useState<string | null>(null);
+
+  // ── Follow-ups ─────────────────────────────────────────────────────────────
+  // On by default, because the delta between an answer and its defense is the
+  // thing a real assessment measures and the thing practice should rehearse.
+  // It is a toggle rather than a given because it costs a second scored call.
+  const [withProbe, setWithProbe] = useState(true);
+  const [probeDraft, setProbeDraft] = useState('');
+  const [probeSeconds, setProbeSeconds] = useState(PRACTICE_PROBE_SECONDS);
+  const [defense, setDefense] = useState<PracticeDefenseResponse | null>(null);
+  const [defenseScoring, setDefenseScoring] = useState(false);
+  const probeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -101,6 +118,10 @@ export default function PracticePage() {
     setPhase('writing');
     setResult(null);
     setScoreError(null);
+    setProbeDraft('');
+    setProbeSeconds(PRACTICE_PROBE_SECONDS);
+    setDefense(null);
+    if (probeTimerRef.current) clearInterval(probeTimerRef.current);
   }
 
   function submit() {
@@ -109,10 +130,13 @@ export default function PracticePage() {
     setScoreError(null);
     setPhase('scoring');
     studyApi
-      .practice(selected.id, answer)
+      .practice(selected.id, answer, withProbe)
       .then((r) => {
         setResult(r);
-        setPhase('result');
+        // A follow-up goes BEFORE the feedback, exactly as it does in a real
+        // assessment: defending an answer you have just been graded on is a
+        // different and much easier exercise.
+        setPhase(r.probe ? 'probe' : 'result');
       })
       .catch((e) => {
         setScoreError(
@@ -122,6 +146,51 @@ export default function PracticePage() {
         );
         setPhase('writing');
       });
+  }
+
+  // The follow-up's own clock. At zero it submits whatever is written —
+  // including nothing, which is a legitimate outcome here as it is in a real
+  // assessment.
+  useEffect(() => {
+    if (phase !== 'probe') return;
+    probeTimerRef.current = setInterval(() => {
+      setProbeSeconds((s) => {
+        if (s <= 1) {
+          if (probeTimerRef.current) clearInterval(probeTimerRef.current);
+          void submitDefense();
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => {
+      if (probeTimerRef.current) clearInterval(probeTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  async function submitDefense() {
+    if (!selected || !result?.probe || defenseScoring) return;
+    setDefenseScoring(true);
+    if (probeTimerRef.current) clearInterval(probeTimerRef.current);
+    try {
+      setDefense(
+        await studyApi.practiceDefense({
+          question_id: selected.id,
+          answer_text: answer,
+          probe_text: result.probe.text,
+          defense_text: probeDraft.trim(),
+          answer_total_pct: result.score.total_pct,
+        }),
+      );
+    } catch {
+      // The answer's own feedback is already earned; a failed defense score
+      // must not take it away.
+      setDefense(null);
+    } finally {
+      setDefenseScoring(false);
+      setPhase('result');
+    }
   }
 
   if (loading) {
@@ -212,6 +281,29 @@ export default function PracticePage() {
                 <AlertTriangle size={15} /> {scoreError}
               </div>
             )}
+            {/* Said plainly: it costs a second scored call, and it is the
+                thing a real assessment actually measures. */}
+            <label className="mt-4 flex cursor-pointer items-start gap-2.5 rounded-lg bg-slate-50 px-3.5 py-2.5">
+              <input
+                type="checkbox"
+                checked={withProbe}
+                onChange={(e) => setWithProbe(e.target.checked)}
+                disabled={phase !== 'writing'}
+                className="mt-0.5 h-4 w-4 cursor-pointer rounded border-slate-300 text-brand-600 focus:ring-brand-400"
+              />
+              <span>
+                <span className="block text-sm font-medium text-slate-700">
+                  Follow-up question (recommended)
+                </span>
+                <span className="block text-xs text-slate-500">
+                  After scoring, you get one follow-up written from your own answer, on a
+                  {' '}{PRACTICE_PROBE_SECONDS}-second clock — the same mechanic a real assessment
+                  uses. It is what interviewers actually measure, and it costs one extra AI call
+                  per practice.
+                </span>
+              </span>
+            </label>
+
             <div className="mt-4 flex items-center justify-between">
               <p className="text-xs text-slate-400">
                 {answer.trim().split(/\s+/).filter(Boolean).length} words
@@ -232,6 +324,49 @@ export default function PracticePage() {
         </Card>
       )}
 
+      {phase === 'probe' && result?.probe && (
+        <Card className="mb-5 border-sky-200 bg-sky-50/40 animate-fade-in">
+          <CardBody className="space-y-4 p-5">
+            <div className="flex items-center justify-between gap-4">
+              <p className="flex items-center gap-2 text-sm font-semibold text-sky-800">
+                <MessageCircleQuestion size={16} /> One follow-up on your answer
+              </p>
+              <span
+                className={cn(
+                  'font-mono tabular text-lg font-bold leading-none',
+                  probeSeconds <= 15 ? 'text-rose-600' : 'text-slate-700',
+                )}
+              >
+                {fmt(probeSeconds)}
+              </span>
+            </div>
+            <p className="text-[15px] font-medium leading-snug text-slate-800">
+              {result.probe.text}
+            </p>
+            <Textarea
+              rows={5}
+              autoFocus
+              value={probeDraft}
+              onChange={(e) => setProbeDraft(e.target.value)}
+              placeholder="A couple of sentences is plenty…"
+            />
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-slate-400">
+                Submits on its own at zero, with whatever you have written.
+              </p>
+              <Button onClick={() => void submitDefense()} disabled={defenseScoring}>
+                {defenseScoring ? (
+                  <Spinner className="border-white/40 border-t-white" />
+                ) : (
+                  <Send size={16} />
+                )}
+                Submit follow-up
+              </Button>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
       {phase === 'result' && result && score && (
         <div className="space-y-5 animate-fade-in">
           <Card>
@@ -244,6 +379,53 @@ export default function PracticePage() {
               </span>
             </CardHeader>
             <CardBody className="space-y-4">
+              {/* The delta first: it is the part of this feedback a real
+                  assessment would weigh most, and the part a practice session
+                  exists to teach. */}
+              {defense && (
+                <div
+                  className={cn(
+                    'rounded-lg border p-3.5',
+                    defense.band === 'defended'
+                      ? 'border-emerald-200 bg-emerald-50'
+                      : defense.band === 'partially_defended'
+                        ? 'border-amber-200 bg-amber-50'
+                        : 'border-rose-200 bg-rose-50',
+                  )}
+                >
+                  <div className="mb-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                    <span className="font-semibold text-slate-800">
+                      {defense.band === 'defended'
+                        ? 'You defended your answer'
+                        : defense.band === 'partially_defended'
+                          ? 'You partially defended it'
+                          : "You couldn't defend it"}
+                    </span>
+                    <span className="text-slate-600 tabular">
+                      answer <strong>{score.total_pct}%</strong> · follow-up{' '}
+                      <strong>{defense.defense_pct}%</strong> · difference{' '}
+                      <strong>
+                        {defense.delta > 0 ? '−' : defense.delta < 0 ? '+' : ''}
+                        {Math.abs(defense.delta)}
+                      </strong>
+                    </span>
+                  </div>
+                  <p className="text-sm leading-relaxed text-slate-700">{defense.coaching}</p>
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    {defense.core_reasoning} {defense.senior_reasoning}
+                  </p>
+                  {defense.next_review && (
+                    <p className="mt-1.5 text-xs font-medium text-slate-500">
+                      Brought forward in your deck — back on{' '}
+                      {new Date(defense.next_review).toLocaleDateString(undefined, {
+                        dateStyle: 'medium',
+                      })}
+                      .
+                    </p>
+                  )}
+                </div>
+              )}
+
               <ScoreRow label="Core answer" value={score.core_pct} note={score.core_reasoning} />
               <ScoreRow label="Senior signal" value={score.senior_signal_pct} note={score.senior_signal_reasoning} />
               <ScoreRow label="Trap awareness" value={score.trap_pct} note={score.trap_reasoning} />

@@ -42,8 +42,53 @@ export interface RecordProgressResponse {
 export interface PracticeRequest {
   question_id: string;
   answer_text: string;
+  /**
+   * Ask for a follow-up on this answer. Default on in the UI, and optional
+   * because it is a second model call the user is paying for in time — the
+   * toggle says so rather than hiding it.
+   */
+  with_probe?: boolean;
+}
+
+/** Seconds a practice follow-up gets. The same clock the real one runs on. */
+export const PRACTICE_PROBE_SECONDS = 90;
+
+/** A follow-up in practice — the same mechanic, nothing stored. */
+export interface PracticeProbe {
+  text: string;
+  time_seconds: number;
+}
+
+export interface PracticeDefenseRequest {
+  question_id: string;
+  /** Echoed back so the scorer sees what is being defended. */
+  answer_text: string;
+  probe_text: string;
+  defense_text: string;
+  /** The answer's own score, so the delta can be computed server-side. */
+  answer_total_pct: number;
+}
+
+export type ProbeDeltaBand = 'defended' | 'partially_defended' | 'not_defended';
+
+export interface PracticeDefenseResponse {
+  defense_pct: number;
+  /** answer − defense. Positive means the defense scored lower. */
+  delta: number;
+  band: ProbeDeltaBand;
+  core_reasoning: string;
+  senior_reasoning: string;
+  /** One line of coaching, written from the delta rather than the score. */
+  coaching: string;
+  /**
+   * When a weak defense pulled this question forward in the deck. null when
+   * the schedule was left alone — a good defense never pushes a review back.
+   */
+  next_review: string | null;
 }
 export interface PracticeResponse {
+  /** Present when a follow-up was asked for AND one could be written. */
+  probe?: PracticeProbe | null;
   score: {
     total_pct: number;
     core_pct: number;

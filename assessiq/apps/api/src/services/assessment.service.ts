@@ -74,12 +74,21 @@ export async function createAssessment(
     throw new AppError(400, 'INVALID_QUESTIONS', 'question_ids contains duplicates');
   }
 
-  // Validate every question exists before saving.
+  // Validate every question exists before saving — and read the rubric while
+  // we are here, because the assessment is about to take a copy of it.
   const found = await prisma.question.findMany({
     where: { id: { in: question_ids } },
-    select: { id: true },
+    select: {
+      id: true,
+      text: true,
+      core_answer_guide: true,
+      senior_signal_guide: true,
+      trap_guide: true,
+      evidence_guide: true,
+    },
   });
   const foundIds = new Set(found.map((q) => q.id));
+  const byId = new Map(found.map((q) => [q.id, q]));
   const missing = question_ids.filter((id) => !foundIds.has(id));
   if (missing.length > 0) {
     throw new AppError(400, 'INVALID_QUESTIONS', `Unknown question id(s): ${missing.join(', ')}`);
@@ -103,7 +112,20 @@ export async function createAssessment(
         ? { proctoring_config: input.proctoring_config as unknown as Prisma.InputJsonValue }
         : {}),
       questions: {
-        create: question_ids.map((question_id, position) => ({ question_id, position })),
+        // The snapshot: what this assessment asks, and the rubric it will be
+        // scored against, fixed at the moment it was built. See the schema.
+        create: question_ids.map((question_id, position) => {
+          const q = byId.get(question_id)!;
+          return {
+            question_id,
+            position,
+            snapshot_text: q.text,
+            snapshot_core_answer_guide: q.core_answer_guide,
+            snapshot_senior_signal_guide: q.senior_signal_guide,
+            snapshot_trap_guide: q.trap_guide,
+            snapshot_evidence_guide: q.evidence_guide,
+          };
+        }),
       },
     },
   });

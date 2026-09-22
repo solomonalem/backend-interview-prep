@@ -6,7 +6,10 @@ import type {
   DecodeJdSource,
   Difficulty,
   JdWeight,
+  PracticeDefenseRequest,
+  PracticeDefenseResponse,
   PracticeResponse,
+  ProbeDeltaBand,
   QuestionType,
   RecordProgressResponse,
   StoryDTO,
@@ -14,12 +17,14 @@ import type {
   StudyRating,
   WeakTopic,
 } from '@assessiq/types';
+import { PRACTICE_PROBE_SECONDS } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { anthropic, DECODE_MODEL, TAGGING_MODEL } from '../lib/claude.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { confidenceForRating, nextReviewDate } from '../utils/spaced-repetition.js';
-import { weightedTotal } from '../utils/score-calc.js';
-import { scoreAnswerText } from './scoring.service.js';
+import { probeDeltaFlag, weightedTotal } from '../utils/score-calc.js';
+import { scoreAnswerText, scoreDefenseText } from './scoring.service.js';
+import { generatePracticeProbe } from './probe.service.js';
 
 // Small JSON helper for the cheap peripheral models (Haiku). Callers guard on
 // `anthropic` and fall back to a heuristic if this throws.
@@ -197,14 +202,24 @@ export async function recordProgress(
 }
 
 // ── POST /study/practice (synchronous scoring) ───────────────────────────────
-export async function practice(questionId: string, answerText: string): Promise<PracticeResponse> {
+export async function practice(
+  questionId: string,
+  answerText: string,
+  opts: { withProbe?: boolean } = {},
+): Promise<PracticeResponse> {
   const q = await prisma.question.findUnique({ where: { id: questionId } });
   if (!q) throw new AppError(404, 'QUESTION_NOT_FOUND', 'Question not found');
 
   const { result } = await scoreAnswerText(q, answerText, questionId);
   const total = weightedTotal(result.core_pct, result.senior_signal_pct, result.trap_pct, result.evidence_pct);
 
+  // The same generator the real thing uses, storing nothing. A null here means
+  // there was too little to quote or the call failed — practice flows on, the
+  // way a candidate's assessment does.
+  const probeText = opts.withProbe ? await generatePracticeProbe(q, answerText) : null;
+
   return {
+    probe: probeText ? { text: probeText, time_seconds: PRACTICE_PROBE_SECONDS } : null,
     score: {
       total_pct: total,
       core_pct: result.core_pct,
@@ -223,6 +238,77 @@ export async function practice(questionId: string, answerText: string): Promise<
       senior_signal_display: q.senior_signal_display,
       trap_display: q.trap_display,
     },
+  };
+}
+
+/**
+ * Score a practice defense and, when it went badly, pull the question forward.
+ *
+ * THE SPACED-REPETITION RULE, stated because it is a judgement call: the delta
+ * maps to the deck's existing ratings — >40 behaves like `missed` (tomorrow),
+ * 21–40 like `partial` (two days), ≤20 changes nothing. And it can only ever
+ * bring a review FORWARD: defending an answer well is not evidence about when
+ * you should next see the question, so a good defense never pushes a review
+ * back. The deck's own self-rating still owns the schedule otherwise.
+ */
+export async function practiceDefense(
+  userId: string,
+  input: PracticeDefenseRequest,
+): Promise<PracticeDefenseResponse> {
+  const q = await prisma.question.findUnique({ where: { id: input.question_id } });
+  if (!q) throw new AppError(404, 'QUESTION_NOT_FOUND', 'Question not found');
+
+  const { result, defense_pct } = await scoreDefenseText(
+    q.text,
+    input.answer_text,
+    input.probe_text,
+    input.defense_text,
+    input.question_id,
+  );
+
+  const delta = input.answer_total_pct - defense_pct;
+  const band = probeDeltaFlag(delta) as ProbeDeltaBand;
+
+  const coaching =
+    band === 'not_defended'
+      ? 'Your follow-up was much thinner than your answer. That usually means the answer was recalled rather than reasoned — practise saying WHY each part of it is true, out loud, before you look anything up.'
+      : band === 'partially_defended'
+        ? 'You held up most of it. The gap is usually one level of detail: pick the claim you were least sure of and work out what you would say if someone asked "why?" twice more.'
+        : 'You defended it as well as you made it. That is the signal an interviewer is actually looking for — the answer was yours.';
+
+  // Only ever earlier. See the rule above.
+  let nextReview: string | null = null;
+  if (band !== 'defended') {
+    const rating: StudyRating = band === 'not_defended' ? 'missed' : 'partial';
+    const existing = await prisma.studyProgress.findUnique({
+      where: { user_id_question_id: { user_id: userId, question_id: input.question_id } },
+    });
+    const proposed = nextReviewDate(rating, (existing?.review_count ?? 0) + 1);
+    if (!existing || proposed < existing.next_review) {
+      await prisma.studyProgress.upsert({
+        where: { user_id_question_id: { user_id: userId, question_id: input.question_id } },
+        create: {
+          user_id: userId,
+          question_id: input.question_id,
+          rating: rating as DbStudyRating,
+          review_count: 1,
+          next_review: nextReviewDate(rating, 1),
+          last_seen: new Date(),
+        },
+        update: { next_review: proposed, last_seen: new Date() },
+      });
+      nextReview = proposed.toISOString();
+    }
+  }
+
+  return {
+    defense_pct,
+    delta,
+    band,
+    core_reasoning: result.core_reasoning,
+    senior_reasoning: result.senior_signal_reasoning,
+    coaching,
+    next_review: nextReview,
   };
 }
 

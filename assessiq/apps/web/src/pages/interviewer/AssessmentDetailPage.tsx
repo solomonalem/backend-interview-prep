@@ -18,6 +18,7 @@ import {
   BellRing,
   CalendarPlus,
   Eye,
+  LayoutTemplate,
 } from 'lucide-react';
 import type {
   CreateLinkResponse,
@@ -38,6 +39,7 @@ import {
   difficultyTone,
 } from '../../components/ui';
 import { assessmentsApi } from '../../api/assessments.api';
+import { templatesApi } from '../../api/templates.api';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { candidateDisplayName, isUnlabeled } from '../../lib/candidateLabel';
 import { cn } from '../../lib/cn';
@@ -138,6 +140,8 @@ export default function AssessmentDetailPage() {
   const [expiryDays, setExpiryDays] = useState<number | null>(DEFAULT_LINK_EXPIRY_DAYS);
   // Per-link busy flags, so one row's reminder doesn't grey out the others.
   const [remindingId, setRemindingId] = useState<string | null>(null);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [templateNote, setTemplateNote] = useState<string | null>(null);
   const [reminderNote, setReminderNote] = useState<{ id: string; text: string } | null>(null);
   const [generating, setGenerating] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
@@ -243,6 +247,22 @@ export default function AssessmentDetailPage() {
     }
   };
 
+  // Save this assessment's questions and settings as a starting point for the
+  // next one. It copies the recipe, not the link or the candidates.
+  const saveAsTemplate = async () => {
+    if (!id || savingTemplate) return;
+    setSavingTemplate(true);
+    setTemplateNote(null);
+    try {
+      const t = await templatesApi.saveFromAssessment(id, {});
+      setTemplateNote(`Saved as a template — "${t.title}" is now in Start from a template.`);
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not save this as a template');
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
   const copy = async (token: string) => {
     await navigator.clipboard.writeText(fullUrl(token));
     setCopiedToken(token);
@@ -284,6 +304,10 @@ export default function AssessmentDetailPage() {
             {/* Before sending it to anyone: the only way to find out that a
                 20-minute timer is brutal without a candidate finding out
                 first. */}
+            <Button variant="secondary" onClick={() => void saveAsTemplate()} disabled={savingTemplate}>
+              {savingTemplate ? <Spinner className="h-3.5 w-3.5" /> : <LayoutTemplate size={15} />}
+              Save as template
+            </Button>
             <Link to={`/preview/${detail.id}`}>
               <Button variant="secondary">
                 <Eye size={15} /> Preview as candidate
@@ -295,6 +319,12 @@ export default function AssessmentDetailPage() {
           </div>
         }
       />
+
+      {templateNote && (
+        <p className="mb-4 rounded-lg border border-emerald-100 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800">
+          {templateNote}
+        </p>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <StatCard icon={<Users size={18} />} label="Links / candidates" value={links.length} tone="brand" />

@@ -170,6 +170,30 @@ Write the follow-up.`;
 }
 
 /**
+ * A probe for job-seeker practice: generated the same way, stored nowhere.
+ *
+ * The SAME generator the interviewer side uses — same prompt, same budget,
+ * same refusal to invent one when the answer is too thin to quote. Practice
+ * that rehearsed an easier mechanic than the real thing would be practice for
+ * the wrong thing.
+ *
+ * Nothing is written: practice has no Answer row to hang a Probe off, and the
+ * interviewer-side tables must not collect rows that were never part of an
+ * assessment.
+ */
+export async function generatePracticeProbe(
+  question: {
+    text: string;
+    core_answer_guide: string;
+    senior_signal_guide: string;
+    trap_guide: string;
+  },
+  answerText: string,
+): Promise<string | null> {
+  return generateProbeText(question, answerText);
+}
+
+/**
  * Generate a probe for one just-submitted answer and persist it.
  *
  * Returns what the candidate should see, or null when they should flow straight

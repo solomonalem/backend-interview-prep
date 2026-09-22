@@ -5,6 +5,7 @@ import type { ReportView, SetScoreOverrideRequest } from '@assessiq/types';
 import { Button, Card, CardBody, EmptyState, PageHeader, Spinner } from '../../components/ui';
 import { ReportBody } from '../../components/report/ReportBody';
 import { ShareReportPanel } from '../../components/report/ShareReportPanel';
+import { InterviewKitPanel } from '../../components/report/InterviewKit';
 import { SendAssessmentDialog } from '../../components/candidates/SendAssessmentDialog';
 import { reportsApi } from '../../api/reports.api';
 import { ApiRequestError } from '../../api/client';
@@ -194,6 +195,10 @@ export default function ReportPage() {
           {pdfError}
         </p>
       )}
+
+      {/* Before the share panel: preparing for the live round is what a
+          manager does next with a report, more often than sharing it. */}
+      <InterviewKitPanel sessionId={session.id} kit={report.interview_kit} />
 
       <ShareReportPanel sessionId={session.id} />
 

@@ -218,6 +218,33 @@ async function callDefenseScorer(user: string): Promise<DefenseResult> {
 }
 
 /**
+ * Score one defense, as a pure function.
+ *
+ * Extracted so job-seeker practice can reuse the exact scorer the interviewer
+ * side uses — the reduced rubric, the same instructions about ninety seconds
+ * of typing, the same stub rule. A practice delta computed by a different
+ * scorer would not be comparable to a real one, which would make it useless
+ * for the only thing it is for: learning what a real one would say.
+ */
+export async function scoreDefenseText(
+  questionText: string,
+  originalAnswer: string,
+  probeText: string,
+  defenseText: string,
+  seed = 'practice',
+): Promise<{ result: DefenseResult; modelUsed: string; defense_pct: number }> {
+  const user = buildDefensePrompt(questionText, originalAnswer, probeText, defenseText);
+  const { result, modelUsed } = anthropic
+    ? { result: await callDefenseScorer(user), modelUsed: SCORING_MODEL }
+    : { result: stubDefense(defenseText, seed), modelUsed: 'stub-dev' };
+  return {
+    result,
+    modelUsed,
+    defense_pct: defenseTotal(result.core_pct, result.senior_signal_pct),
+  };
+}
+
+/**
  * Score the defense attached to one answer, if there is one.
  *
  * Runs in the same job as the answer's own score, immediately after it, for two
@@ -256,15 +283,13 @@ async function scoreDefenseFor(answerId: string, questionText: string, originalA
   }
 
   try {
-    const user = buildDefensePrompt(
+    const { result, modelUsed, defense_pct } = await scoreDefenseText(
       questionText,
       originalAnswer,
       probe.text ?? '',
       defenseText,
+      probe.id,
     );
-    const { result, modelUsed } = anthropic
-      ? { result: await callDefenseScorer(user), modelUsed: SCORING_MODEL }
-      : { result: stubDefense(defenseText, probe.id), modelUsed: 'stub-dev' };
 
     await prisma.probe.update({
       where: { id: probe.id },
@@ -273,7 +298,7 @@ async function scoreDefenseFor(answerId: string, questionText: string, originalA
         defense_senior_signal_pct: result.senior_signal_pct,
         defense_core_reasoning: result.core_reasoning,
         defense_senior_reasoning: result.senior_signal_reasoning,
-        defense_pct: defenseTotal(result.core_pct, result.senior_signal_pct),
+        defense_pct,
         model_used: modelUsed,
         scored_at: new Date(),
       },
@@ -292,11 +317,41 @@ export async function scoreAnswer(answerId: string): Promise<void> {
     where: { id: answerId },
     include: {
       question: true,
-      session: { include: { assessment: { select: { confidence_rating_enabled: true } } } },
+      session: {
+        include: { assessment: { select: { id: true, confidence_rating_enabled: true } } },
+      },
     },
   });
   if (!answer) throw new Error(`answer not found: ${answerId}`);
   if (answer.scoring_status === 'scored') return; // idempotent
+
+  // THE RUBRIC AS IT WAS. An answer is scored against the guides this
+  // assessment was built with, not against whatever the bank says today —
+  // otherwise editing a question rewrites how people were already judged.
+  // Falls back to the live question for assessments predating snapshots.
+  const snapshot = await prisma.assessmentQuestion.findUnique({
+    where: {
+      assessment_id_question_id: {
+        assessment_id: answer.session.assessment.id,
+        question_id: answer.question_id,
+      },
+    },
+    select: {
+      snapshot_text: true,
+      snapshot_core_answer_guide: true,
+      snapshot_senior_signal_guide: true,
+      snapshot_trap_guide: true,
+      snapshot_evidence_guide: true,
+    },
+  });
+  const rubric = {
+    text: snapshot?.snapshot_text ?? answer.question.text,
+    core_answer_guide: snapshot?.snapshot_core_answer_guide ?? answer.question.core_answer_guide,
+    senior_signal_guide:
+      snapshot?.snapshot_senior_signal_guide ?? answer.question.senior_signal_guide,
+    trap_guide: snapshot?.snapshot_trap_guide ?? answer.question.trap_guide,
+    evidence_guide: snapshot?.snapshot_evidence_guide ?? answer.question.evidence_guide,
+  };
 
   await prisma.answer.update({ where: { id: answerId }, data: { scoring_status: 'scoring' } });
 
@@ -308,7 +363,7 @@ export async function scoreAnswer(answerId: string): Promise<void> {
     answer.snippet_language,
   );
 
-  const { result, modelUsed } = await scoreAnswerText(answer.question, answerForModel, answer.id);
+  const { result, modelUsed } = await scoreAnswerText(rubric, answerForModel, answer.id);
 
   const total = weightedTotal(
     result.core_pct,
@@ -345,7 +400,7 @@ export async function scoreAnswer(answerId: string): Promise<void> {
 
   // After the answer's own score is committed — the defense is a comparison
   // against it, and a failure here must never roll back the score above.
-  await scoreDefenseFor(answerId, answer.question.text, answerForModel);
+  await scoreDefenseFor(answerId, rubric.text, answerForModel);
 }
 
 export async function markAnswerFailed(answerId: string): Promise<void> {

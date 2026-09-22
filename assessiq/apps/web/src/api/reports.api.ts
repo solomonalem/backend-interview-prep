@@ -1,4 +1,5 @@
 import type {
+  InterviewKit,
   ReportResponse,
   ReportShareListResponse,
   ReportShareSummary,
@@ -20,6 +21,10 @@ export const reportsApi = {
 
   clearOverride: (sessionId: string, questionId: string) =>
     api.del<ReportView>(`/reports/session/${sessionId}/questions/${questionId}/override`),
+
+  /** Prepare (or re-prepare) the live-round guide. Never stubbed. */
+  generateInterviewKit: (sessionId: string) =>
+    api.post<InterviewKit>(`/reports/session/${sessionId}/interview-kit`),
 
   // ── Shared links ───────────────────────────────────────────────────────────
   listShares: (sessionId: string) =>
