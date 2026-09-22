@@ -7,6 +7,7 @@ import {
   answerProbe,
   getQuestion,
   recordEvents,
+  saveDraft,
   startSession,
   submitAnswer,
   submitSession,
@@ -78,6 +79,32 @@ sessionsRouter.post(
       throw new AppError(400, 'VALIDATION', parsed.error.issues[0]?.message ?? 'Invalid answer');
     }
     res.status(201).json(await submitAnswer(req.candidate!.sessionId, parsed.data));
+  }),
+);
+
+const draftSchema = z.object({
+  text: z.string(),
+  snippet_code: z
+    .string()
+    .max(SNIPPET_MAX_CHARS, `Your code snippet is too long — the limit is ${SNIPPET_MAX_CHARS} characters.`)
+    .optional(),
+  snippet_language: z.enum(SNIPPET_LANGUAGES).optional(),
+});
+
+// PUT /sessions/:id/questions/:questionId/draft — autosave work in progress.
+// Called on a debounce while typing and before leaving a question; it never
+// advances the session and never becomes an answer on its own.
+sessionsRouter.put(
+  '/:id/questions/:questionId/draft',
+  authCandidate,
+  asyncHandler(async (req, res) => {
+    const parsed = draftSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION', parsed.error.issues[0]?.message ?? 'Invalid draft');
+    }
+    const { questionId } = req.params;
+    if (!questionId) throw new AppError(400, 'VALIDATION', 'questionId is required');
+    res.json(await saveDraft(req.candidate!.sessionId, questionId, parsed.data));
   }),
 );
 

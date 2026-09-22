@@ -1,5 +1,7 @@
 import type {
   BehaviorEventInput,
+  SaveDraftRequest,
+  SaveDraftResponse,
   SubmitProbeAnswerRequest,
   SubmitProbeAnswerResponse,
   LinkValidateResponse,
@@ -34,6 +36,19 @@ export const sessionsApi = {
   ) =>
     api.post<SubmitProbeAnswerResponse>(
       `/sessions/${sessionId}/probes/${probeId}/answer`,
+      body,
+      bearer(sessionToken),
+    ),
+  // Autosave. Fire-and-forget from the caller's point of view: it must never
+  // block typing, and a failed save is retried by the next keystroke.
+  saveDraft: (
+    sessionId: string,
+    questionId: string,
+    body: SaveDraftRequest,
+    sessionToken: string,
+  ) =>
+    api.put<SaveDraftResponse>(
+      `/sessions/${sessionId}/questions/${questionId}/draft`,
       body,
       bearer(sessionToken),
     ),
