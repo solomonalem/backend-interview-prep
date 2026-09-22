@@ -66,6 +66,8 @@ export interface AssessmentLinkSummary {
   token: string;
   candidate_label: string | null;
   candidate_email: string | null;
+  /** The manager's record this link is filed under, when it has one. */
+  candidate_id: string | null;
   status: LinkStatus;
   overall_score: number | null;
 }
@@ -101,6 +103,8 @@ export interface AssessmentDetailLink {
   token: string;
   candidate_label: string | null;
   candidate_email: string | null;
+  /** The manager's record this link is filed under, when it has one. */
+  candidate_id: string | null;
   expires_at: string;
   status: LinkStatus;
   session?: {

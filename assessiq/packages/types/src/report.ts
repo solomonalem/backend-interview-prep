@@ -137,6 +137,12 @@ export interface ReportView {
   session: {
     id: string;
     candidate_label: string | null;
+    /**
+     * The manager's record for this person, when one exists. Present so the
+     * report can link back to their history and offer to send them another
+     * assessment — not because the candidate has an account. They do not.
+     */
+    candidate: { id: string; name: string; email: string } | null;
     started_at: string | null;
     submitted_at: string | null;
     time_used_ms: number;
@@ -171,3 +177,23 @@ export interface ReportView {
 }
 
 export type ReportResponse = ReportView | ReportPending;
+
+// ── Shareable report links ───────────────────────────────────────────────────
+// A read-only link to one report, for people who have no account here and
+// should not need one — a teammate, a panel, a hiring committee. The token
+// authorises exactly one report view: it is resolved by its own server-side
+// path and is not accepted anywhere else in the API.
+
+export interface ReportShareSummary {
+  id: string;
+  /** The whole URL, ready to copy. */
+  url: string;
+  created_at: string;
+  /** Set once revoked. A dead link stays listed rather than vanishing, so the
+   *  manager can see it existed and is now closed. */
+  revoked_at: string | null;
+}
+
+export interface ReportShareListResponse {
+  shares: ReportShareSummary[];
+}

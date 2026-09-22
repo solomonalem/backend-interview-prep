@@ -10,6 +10,8 @@ import DashboardPage from './pages/interviewer/DashboardPage';
 import QuestionBankPage from './pages/interviewer/QuestionBankPage';
 import AssessmentBuilderPage from './pages/interviewer/AssessmentBuilderPage';
 import AssessmentDetailPage from './pages/interviewer/AssessmentDetailPage';
+import CandidatesPage from './pages/interviewer/CandidatesPage';
+import CandidateDetailPage from './pages/interviewer/CandidateDetailPage';
 import ReportPage from './pages/interviewer/ReportPage';
 import IntegrationsPage from './pages/interviewer/IntegrationsPage';
 import ScanPage from './pages/interviewer/ScanPage';
@@ -20,6 +22,8 @@ import StudyModePage from './pages/study/StudyModePage';
 import PracticePage from './pages/study/PracticePage';
 import StoryBankPage from './pages/study/StoryBankPage';
 import OnboardingPage from './pages/study/OnboardingPage';
+
+import SharedReportPage from './pages/SharedReportPage';
 
 import LinkLandingPage from './pages/candidate/LinkLandingPage';
 import CandidateAssessmentPage from './pages/candidate/CandidateAssessmentPage';
@@ -45,6 +49,10 @@ export default function App() {
           {/* Public */}
           <Route path="/login" element={<LoginPage />} />
 
+          {/* A shared report — public, read-only, and deliberately outside the
+              app shell: no nav, no sidebar, no way into the account behind it. */}
+          <Route path="/r/:token" element={<SharedReportPage />} />
+
           {/* Candidate flow (public, minimal chrome) */}
           <Route path="/a/:token" element={<CandidateLayout><LinkLandingPage /></CandidateLayout>} />
           <Route path="/a/:token/session" element={<CandidateLayout><CandidateAssessmentPage /></CandidateLayout>} />
@@ -62,6 +70,8 @@ export default function App() {
             <Route path="/bank" element={<QuestionBankPage />} />
             <Route path="/build" element={<AssessmentBuilderPage />} />
             <Route path="/assessments/:id" element={<AssessmentDetailPage />} />
+            <Route path="/candidates" element={<CandidatesPage />} />
+            <Route path="/candidates/:id" element={<CandidateDetailPage />} />
             <Route path="/reports/:id" element={<ReportPage />} />
             <Route path="/settings/integrations" element={<IntegrationsPage />} />
             <Route path="/scans/:id" element={<ScanPage />} />

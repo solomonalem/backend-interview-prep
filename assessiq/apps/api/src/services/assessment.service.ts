@@ -10,7 +10,6 @@ import type {
   DuplicateCandidate,
   InviteEmailStatus,
   Difficulty,
-  LinkStatus,
   ProctoringConfig,
   QuestionType,
 } from '@assessiq/types';
@@ -22,7 +21,9 @@ import {
 } from '@assessiq/types';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/error.middleware.js';
+import { deriveLinkStatus } from '../utils/link-status.js';
 import { generateToken } from '../utils/token.js';
+import { findOrCreateCandidate } from './candidate.service.js';
 import { sendCandidateInvite } from './email.service.js';
 
 const DEFAULT_EXPIRES_HOURS = 168; // 7 days
@@ -35,30 +36,14 @@ function clampProbeSeconds(seconds: number | undefined): number {
   return Math.min(MAX_PROBE_SECONDS, Math.max(MIN_PROBE_SECONDS, Math.round(seconds)));
 }
 
-// A link's status is derived from its session (if started) and its expiry.
+// Status derivation moved to utils/link-status — the candidate record's
+// journey renders the same five words about the same links, and two copies
+// would eventually disagree.
 type LinkWithSession = {
   opened_at: Date | null;
   expires_at: Date;
   session: { status: string; report: { overall_pct: number } | null } | null;
 };
-
-function deriveLinkStatus(link: LinkWithSession): LinkStatus {
-  if (link.session) {
-    switch (link.session.status) {
-      case 'in_progress':
-        return 'in_progress';
-      case 'submitted':
-        return 'submitted';
-      case 'expired':
-        return 'expired';
-      default:
-        return 'opened'; // session exists but not_started
-    }
-  }
-  if (link.expires_at.getTime() < Date.now()) return 'expired';
-  if (link.opened_at) return 'opened';
-  return 'not_opened';
-}
 
 function linkOverallScore(link: LinkWithSession): number | null {
   return link.session?.report?.overall_pct ?? null;
@@ -148,6 +133,7 @@ export async function listAssessments(ownerId: string): Promise<AssessmentListRe
         token: link.token,
         candidate_label: link.candidate_label,
         candidate_email: link.candidate_email,
+        candidate_id: link.candidate_id,
         status: deriveLinkStatus(link),
         overall_score: linkOverallScore(link),
       })),
@@ -201,6 +187,7 @@ export async function getAssessmentDetail(
         token: link.token,
         candidate_label: link.candidate_label,
         candidate_email: link.candidate_email,
+        candidate_id: link.candidate_id,
         expires_at: link.expires_at.toISOString(),
         status,
         ...(link.session
@@ -351,14 +338,26 @@ export async function createLink(
     token = generateToken();
   }
 
+  const label = input.candidate_label?.trim()
+    ? input.candidate_label.trim()
+    : await nextDefaultLabel(assessmentId);
+  const candidateEmail = input.candidate_email?.trim().toLowerCase() || null;
+
+  // Records accrete from ordinary use: sending someone a link files it under
+  // them, whether or not the manager has ever opened the candidates page. An
+  // address is the only identity a candidate has, so a link without one stays
+  // standalone rather than being filed under a guess.
+  const candidate = candidateEmail
+    ? await findOrCreateCandidate(ownerId, candidateEmail, label)
+    : null;
+
   const link = await prisma.assessmentLink.create({
     data: {
       token,
       assessment_id: assessmentId,
-      candidate_label: input.candidate_label?.trim()
-        ? input.candidate_label.trim()
-        : await nextDefaultLabel(assessmentId),
-      candidate_email: input.candidate_email?.trim().toLowerCase() || null,
+      candidate_label: label,
+      candidate_email: candidateEmail,
+      candidate_id: candidate?.id ?? null,
       expires_at: expiresAt,
     },
   });

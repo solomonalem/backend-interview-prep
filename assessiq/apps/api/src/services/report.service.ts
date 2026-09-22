@@ -189,9 +189,19 @@ export async function compileReport(sessionId: string): Promise<void> {
 }
 
 // ── GET /reports/session/:id ─────────────────────────────────────────────────
-export async function getReport(
-  ownerId: string,
+/**
+ * Who is asking for this report.
+ *
+ * Two ways in, and only two: the manager who owns the assessment, or someone
+ * holding a share token. They are kept as distinct viewers rather than as an
+ * "ownerId or null" because the difference decides what the response contains,
+ * and a nullable owner would make "unauthenticated" the same shape as a bug.
+ */
+type ReportViewer = { kind: 'owner'; ownerId: string } | { kind: 'share' };
+
+async function buildReport(
   sessionId: string,
+  viewer: ReportViewer,
 ): Promise<{ code: number; body: ReportResponse }> {
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
@@ -228,10 +238,16 @@ export async function getReport(
       },
       behavior_events: true,
       report: true,
+      // The manager's record for this person, when the link was filed under
+      // one. Carried so the report can point back at their history — never
+      // because the candidate has an account here. They do not.
+      link: { select: { candidate: { select: { id: true, name: true, email: true } } } },
     },
   });
   // Not found OR not owned → 404 (don't leak existence of others' sessions).
-  if (!session || session.assessment.owner_id !== ownerId) {
+  // A share viewer has already been authorised for THIS session by its token;
+  // it grants nothing else, and it is resolved before we get here.
+  if (!session || (viewer.kind === 'owner' && session.assessment.owner_id !== viewer.ownerId)) {
     throw new AppError(404, 'REPORT_NOT_FOUND', 'Report not found');
   }
 
@@ -263,6 +279,19 @@ export async function getReport(
       session: {
         id: session.id,
         candidate_label: session.candidate_label,
+        // Stripped for a shared view, deliberately. The record is the
+        // MANAGER's — it carries their notes, their history and the
+        // candidate's address — and a link handed to a panel is not a door
+        // into it. Nulling it here also removes the "send another assessment"
+        // affordance from the shared page, since there is nothing to send to.
+        candidate:
+          viewer.kind === 'owner' && session.link?.candidate
+            ? {
+                id: session.link.candidate.id,
+                name: session.link.candidate.name,
+                email: session.link.candidate.email,
+              }
+            : null,
         started_at: session.started_at?.toISOString() ?? null,
         submitted_at: session.submitted_at?.toISOString() ?? null,
         time_used_ms: timeUsed,
@@ -360,6 +389,42 @@ export async function getReport(
       pdf_url: session.report.pdf_url,
     },
   };
+}
+
+// ── The two ways to read a report ────────────────────────────────────────────
+
+/** The manager's own view. Ownership is checked; everything is present. */
+export async function getReport(
+  ownerId: string,
+  sessionId: string,
+): Promise<{ code: number; body: ReportResponse }> {
+  return buildReport(sessionId, { kind: 'owner', ownerId });
+}
+
+/**
+ * The shared view, resolved from a token and nothing else.
+ *
+ * This is a SEPARATE AUTHORISATION PATH, not a relaxed version of the one
+ * above: no cookie is read, no user is looked up, and the token is turned into
+ * exactly one session id before any report work starts. A share token is
+ * therefore incapable of reaching another report, a list, or any mutation —
+ * there is no code that accepts one anywhere else.
+ *
+ * A revoked or unknown token gets the same 404 as a missing one. Telling the
+ * difference would confirm that a link once existed for someone who should no
+ * longer have anything.
+ */
+export async function getSharedReport(
+  token: string,
+): Promise<{ code: number; body: ReportResponse }> {
+  const share = await prisma.reportShare.findUnique({
+    where: { token },
+    select: { session_id: true, revoked_at: true },
+  });
+  if (!share || share.revoked_at) {
+    throw new AppError(404, 'SHARE_INVALID', 'This link is no longer active');
+  }
+  return buildReport(share.session_id, { kind: 'share' });
 }
 
 // ── Score override ───────────────────────────────────────────────────────────

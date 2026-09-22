@@ -69,6 +69,42 @@ async function uploadRequest<T>(path: string, form: FormData): Promise<T> {
   return body as T;
 }
 
+/**
+ * Fetch a file and hand it to the browser as a download.
+ *
+ * Separate from `request` because the response is bytes, not JSON, and because
+ * the filename the server chose is worth keeping — a folder of
+ * "report.pdf (3)" is a folder of files nobody can tell apart.
+ *
+ * Errors still arrive as JSON, so a failure is read and reported the same way
+ * every other call's is.
+ */
+async function downloadRequest(path: string, fallbackName: string): Promise<void> {
+  const res = await fetch(BASE + path, { credentials: 'include' });
+  if (!res.ok) {
+    const isJson = res.headers.get('content-type')?.includes('application/json');
+    const body = isJson ? ((await res.json()) as Partial<ApiError>) : {};
+    throw new ApiRequestError(
+      res.status,
+      body.code ?? 'UNKNOWN',
+      body.error ?? res.statusText,
+    );
+  }
+  const disposition = res.headers.get('content-disposition') ?? '';
+  const named = /filename="?([^"]+)"?/.exec(disposition)?.[1];
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = named ?? fallbackName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on the next tick — Safari needs the URL to still be live when the
+  // click is handled.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export const api = {
   get: <T>(path: string, headers?: Headers) => request<T>(path, { headers }),
   post: <T>(path: string, data?: unknown, headers?: Headers) =>
@@ -92,6 +128,7 @@ export const api = {
   del: <T = null>(path: string, headers?: Headers) =>
     request<T>(path, { method: 'DELETE', headers }),
   upload: <T>(path: string, form: FormData) => uploadRequest<T>(path, form),
+  download: (path: string, fallbackName: string) => downloadRequest(path, fallbackName),
 };
 
 // Authorization header for candidate session calls (Bearer token, not cookie).

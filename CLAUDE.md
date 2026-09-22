@@ -185,7 +185,7 @@ timer before the candidate starts, the same honesty rule as proctoring — and
 the report presents the delta as context, never a verdict. Build spec:
 `docs/BUILD_FOLLOWUP_PROBES.md`.
 
-### Code sketches (Feature D — built, PR open to `develop`)
+### Code sketches (Feature D — merged to `develop`, PR #31)
 An optional **"Add code"** box under the answer textarea: the candidate sketches
 code to support their reasoning, picks a language or leaves it on **Auto**, and
 the sketch flows into scoring, probes, paste tracking and the report. **There is
@@ -209,6 +209,46 @@ behind a dynamic `highlight.js` import that leaves the main bundle untouched.
 **Candidates see nothing new**: the question payload stays `{id, text, topic}`,
 and a sketch is only their own input echoed back. Build spec:
 `docs/BUILD_CODE_SNIPPET.md`.
+
+### The post-assessment layer (built, PR open to `develop`)
+What happens after a candidate submits: records, reuse, and a report that
+travels. **Candidates still click links; managers keep records** — there is no
+candidate account, password or portal anywhere in this wave.
+
+- **Candidate records** — `Candidate {owner_id, name, email, notes}`, unique on
+  `(owner_id, email)` because email is the only stable handle someone without
+  an account has. `AssessmentLink.candidate_id` is nullable + **SetNull**, so
+  deleting a record never touches a link, session, score or report. Records
+  **accrete from ordinary use**: sending a link to an address find-or-creates
+  one. History was **backfilled inside the migration** (6 records from 8
+  emailed links locally) rather than by a script someone has to remember; names
+  come from a human-typed label, never the auto "Candidate 3" handle.
+- **The journey** — every assessment ever sent to a person, newest first, with
+  status/score/verdict and a jump to each report. Matches on `candidate_id` or,
+  for pre-backfill stragglers, the address.
+- **Send another test** — a shortcut into the *existing* invite flow with
+  identity pre-filled, from the record or from a completed report. Same
+  endpoint, same duplicate warning, same email. **Email edits refuse
+  collisions** (409 naming the other record) — merging is out of scope, and a
+  silent merge would destroy history.
+- **Shareable report links** — `ReportShare {session_id, token, revoked_at}`,
+  several per report, each revocable. The read path is a **separate
+  authorisation path**: `getReport(ownerId, …)` and `getSharedReport(token)`
+  are two wrappers over one builder, and a share token is not a JWT so it
+  cannot even be presented to the two middlewares. Probed against 10 other
+  endpoints → 401/404 on every one. The shared response has the candidate
+  **record stripped** (and with it their email), so the page shows no record
+  link and no send-another. `/r/:token`, outside the app shell entirely.
+- **PDF export** — manager view and shared view. Puppeteer renders **our own
+  template via `setContent`**, not the SPA route: no cookie in a headless
+  browser, no dependency on the web app running. Built from the same
+  `ReportView` the page renders, so it cannot show different numbers. **Capped,
+  not queued** (one reused browser, 2 concurrent, streamed back) because R2 is
+  not configured and a queued job would have nowhere to write — `pdf_url` /
+  `pdf_status` stay unused. Chromium is still not downloaded by `npm install`;
+  a missing browser answers **503 with the install command**.
+
+Build spec: `docs/BUILD_POST_ASSESSMENT.md`.
 
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
@@ -326,14 +366,16 @@ There are **no automated tests yet** — Phase 0 is manual testing only, by desi
 
 ## Next wave — post-v1.1.0
 
-**The plan is `docs/BLUEPRINT_POST_EPIC.md`.** All three of its buildable
-features are now done: **A. document-grounded generation** (merged, PR #29),
-**B. automated follow-up probes** (merged, PR #30) and **D. the code snippet
-field** (on `feat/code-snippet`, PR open) — all described in the status section
-above. Sections **C** (pricing/multi-tenancy) and **E** (live manager mode)
-remain designs only, deliberately not built, each with a stated trigger to
-revisit. With D merged there is no queued feature work; the follow-ups below
-are the list.
+**`docs/BLUEPRINT_POST_EPIC.md` is fully delivered**: **A. document-grounded
+generation** (PR #29), **B. automated follow-up probes** (PR #30) and **D. the
+code snippet field** (PR #31) are all merged. Sections **C** (pricing /
+multi-tenancy) and **E** (live manager mode) remain designs only, each with a
+stated trigger to revisit.
+
+The wave after it — **the post-assessment layer** (`docs/BUILD_POST_ASSESSMENT.md`:
+candidate records, send-another, shareable report links, PDF export) — is built
+and described in the status section above. **PDF export is therefore closed**;
+it was follow-up (2) in the list below.
 
 ### Follow-ups and deliberate exclusions
 
@@ -344,9 +386,12 @@ Nothing is half-finished; these are known gaps, roughly in value order.
    maths (`score-calc`, now including the override recompute), the pool
    thresholds in `generation.service`, the `_guide`-never-leaks guarantee, and
    the "an override never writes an AI score column" invariant.
-2. **PDF export** (Puppeteer → R2). Columns exist; Chromium download is skipped
-   locally via `.npmrc` (`npx puppeteer browsers install chrome` to enable).
-   Note it must render the override alongside the AI score, not instead of it.
+2. ~~PDF export~~ — **done** in the post-assessment wave, rendering a
+   server-side template rather than the SPA route, and capped rather than
+   queued. What remains of the original plan is the **R2 upload** those
+   `pdf_url` / `pdf_status` columns exist for; until then a PDF is generated
+   per request and streamed, never stored. Chromium must be installed once:
+   `npx puppeteer browsers install chrome`.
 3. **Deploy + auth hardening** — Railway per `docs/06`, real Google OAuth
    credentials, rate limiting.
 4. **Generation dedup.** Batched generation calls don't see each other's output,
@@ -379,6 +424,14 @@ Nothing is half-finished; these are known gaps, roughly in value order.
    has proctoring implications worth deciding deliberately rather than as part
    of a feature. `docs/BUILD_CODE_SNIPPET.md` assumes an autosave/draft layer
    that has never existed in this codebase.
+
+10. **Share links have no time-based expiry.** Revocation only, deliberately
+    scoped that way for this wave. An expiring share (and a "revoke all" on a
+    report) are the obvious follow-ups.
+11. **Merging two candidate records is not possible.** An email edit that
+    would collide is refused with the other record named; the manager has to
+    resolve it by hand. Out of scope this wave on purpose — a merge silently
+    picking a name, notes and history is a destructive operation with no undo.
 
 Closed since v1.1.0: the synthesis-prompt risk skew (`56c6c50` — the prompt now
 asks for at least three finding kinds and caps any one at half the set; verified
