@@ -8,6 +8,7 @@ import {
   getSharedReport,
   setScoreOverride,
 } from '../services/report.service.js';
+import { generateInterviewKit } from '../services/interview-kit.service.js';
 import {
   createReportShare,
   listReportShares,
@@ -78,6 +79,19 @@ reportsRouter.get(
     const { sessionId } = req.params;
     if (!sessionId) throw new AppError(400, 'VALIDATION', 'sessionId is required');
     sendPdf(res, await renderReportPdf(req.interviewer!.id, sessionId));
+  }),
+);
+
+// POST /reports/session/:sessionId/interview-kit — prepare the live round.
+// Regenerating is the same call: a manager who has changed their mind about a
+// score should be able to ask for a fresh kit.
+reportsRouter.post(
+  '/session/:sessionId/interview-kit',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) throw new AppError(400, 'VALIDATION', 'sessionId is required');
+    res.json(await generateInterviewKit(req.interviewer!.id, sessionId));
   }),
 );
 

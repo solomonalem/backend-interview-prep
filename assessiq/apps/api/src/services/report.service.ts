@@ -391,6 +391,14 @@ async function buildReport(
           confidence_flag: a?.score?.confidence_flag ?? null,
         };
       }),
+      // WITHHELD FROM A SHARED VIEW, deliberately. The kit is the questions
+      // the interviewer plans to ask next; handing it to whoever holds a share
+      // link would leak the plan to the panel — and, if the link ever reached
+      // the candidate, to them. The owner path is the only one that sees it.
+      interview_kit:
+        viewer.kind === 'owner'
+          ? ((session.interview_kit as unknown as ReportView['interview_kit']) ?? null)
+          : null,
       pdf_url: session.report.pdf_url,
     },
   };

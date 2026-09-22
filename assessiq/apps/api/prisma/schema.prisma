@@ -331,6 +331,18 @@ model Session {
 
   candidate_label String?         // carried from AssessmentLink
 
+  // A live-round guide built from this report: targeted questions tied to
+  // specific weaknesses, what strong and weak answers sound like, red flags
+  // and an agenda.
+  //
+  // INTERVIEWER-ONLY. Cached here because it costs a model call and rarely
+  // needs regenerating, and stored as Json because its shape is the model's
+  // output, not a thing the database should have opinions about. It is
+  // withheld from the shared report view in the builder — a panel given a
+  // share link must not receive the questions the interviewer plans to ask.
+  interview_kit     Json?
+  interview_kit_at  DateTime?
+
   // A manager walking their own assessment to see what they are sending.
   //
   // Preview sessions are real sessions — the same questions, timer, proctoring
