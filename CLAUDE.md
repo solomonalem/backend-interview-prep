@@ -250,7 +250,7 @@ candidate account, password or portal anywhere in this wave.
 
 Build spec: `docs/BUILD_POST_ASSESSMENT.md`.
 
-### Candidate-side robustness (built, PR open to `develop`)
+### Candidate-side robustness (merged to `develop`, PR #33)
 Three gaps a real candidate or manager hits immediately, all pre-existing.
 
 - **Answers survive the clock.** Drafts autosave (3s debounce, on blur, when
@@ -285,6 +285,47 @@ Three gaps a real candidate or manager hits immediately, all pre-existing.
   older than 24h are deleted when the next one starts.
 
 Build spec: `docs/BUILD_CANDIDATE_ROBUSTNESS.md`.
+
+### Completeness wave (built, PR open to `develop`)
+Four features that make the product feel finished rather than functional.
+
+- **Assessment templates.** `AssessmentTemplate` (owner NULL = built-in).
+  Picking one fills the builder in and hands it back fully editable — a
+  template never creates anything. Five built-ins seeded **from what the bank
+  actually contains** (Backend Screen, Senior Deep Dive, API & Integrations,
+  Auth & Security, Data & Messaging); the seeder skips any it can't fill to two
+  thirds, so no role is offered that the bank can't assess. `question_ids` is a
+  plain array: a question archived later is dropped **with a visible count**,
+  never silently. "Save as template" on any assessment.
+- **Bank management.** Server-side pagination (25/50) + filters (status,
+  difficulty, type, source, tag, archived), search across text *and* topic, and
+  sort (newest / oldest / most used / topic) — closing follow-up #8. Tags
+  (`Question.tags`, de-duplicated case-insensitively). Edit in place through
+  the same rubric fields as review, **never changing status**. Soft archive with
+  its own filter and restore. Export (own questions, full rubric) and import
+  that **always lands as drafts**. Per-question usage (assessments used in,
+  mean score) computed per page.
+- **THE SNAPSHOT** — the decision worth knowing about. `AssessmentQuestion` now
+  copies the question text and all four guides at assessment creation, and the
+  candidate flow, probe generator, scorer and report all read the copy.
+  Editing a question therefore cannot rewrite what a past candidate was asked
+  or how they were scored. Tradeoff accepted: an assessment does **not** pick up
+  later improvements. Columns are nullable with live fallback, so pre-snapshot
+  rows behave as before.
+- **Live interview kit.** One `GENERATION_MODEL` call over a scored report →
+  3–5 questions each tied to a specific weakness, strong/weak answer shapes,
+  red flags, a 30-minute agenda. Cached on `Session.interview_kit`,
+  regenerable, in the owner's PDF. **Never stubbed** (no key → 503) and
+  **interviewer-only**: the shared report builder nulls it, so neither the
+  shared view nor the shared PDF can carry it.
+- **Practice follow-ups.** The same generator and the same defense scorer as
+  the interviewer side (extracted as `generatePracticeProbe` /
+  `scoreDefenseText`), stateless — no interviewer-side rows. Feedback leads
+  with the delta plus a coaching line. **SR rule**: delta >40 behaves like
+  `missed`, 21–40 like `partial`, ≤20 changes nothing — and it can only ever
+  bring a review **forward**, never push one back.
+
+Build spec: `docs/BUILD_COMPLETENESS.md`.
 
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
@@ -408,12 +449,14 @@ code snippet field** (PR #31) are all merged. Sections **C** (pricing /
 multi-tenancy) and **E** (live manager mode) remain designs only, each with a
 stated trigger to revisit.
 
-Two waves have shipped since: **the post-assessment layer**
+Three waves have shipped since: **the post-assessment layer**
 (`docs/BUILD_POST_ASSESSMENT.md` — candidate records, send-another, shareable
 report links, PDF export, merged as PR #32) and **candidate-side robustness**
 (`docs/BUILD_CANDIDATE_ROBUSTNESS.md` — autosave + expiry grace, link expiry +
-reminders, preview as candidate). Both are described in the status section
-above. **Follow-ups #2, #7 and #9 are therefore closed.**
+reminders, preview as candidate) and **the completeness wave**
+(`docs/BUILD_COMPLETENESS.md` — templates, bank management, the live interview
+kit, practice follow-ups). All three are described in the status section above.
+**Follow-ups #2, #7, #8 and #9 are therefore closed.**
 
 ### Follow-ups and deliberate exclusions
 
@@ -448,10 +491,9 @@ Nothing is half-finished; these are known gaps, roughly in value order.
    candidate-robustness wave. `closeExpiredSession` now promotes drafts,
    finalises probes AND queues scoring, so an abandoned tab still produces a
    report.
-8. **The bank page shows only the first 100 questions.** `QuestionBankPage`
-   fetches `limit: 100` ordered oldest-first with no pagination control, so the
-   newest questions — including freshly generated grounded ones — are reachable
-   only through search. Pre-dates Feature A; noticed while testing it.
+8. ~~The bank page shows only the first 100 questions~~ — **done** in the
+   completeness wave: server-side pagination, filters on every axis, and
+   newest-first by default.
 9. ~~An in-progress answer is not submitted when the timer expires~~ —
    **done** in the candidate-robustness wave: drafts autosave, a 10s server
    grace window absorbs the last one, and at expiry it is promoted to the
@@ -475,6 +517,17 @@ Nothing is half-finished; these are known gaps, roughly in value order.
     extended by weeks. Manual reminders are the escape hatch; a "reset the
     automatic reminder when a link is extended" rule is the obvious follow-up
     if anyone wants it.
+
+14. **The bank is shared, so edit and archive are too.** Every manager already
+    sees every question through `GET /questions`; editing follows that rule and
+    is not owner-scoped. If the bank ever becomes per-owner, edit/archive need
+    the same scoping as everything else.
+15. **Assessments don't pick up question improvements.** The deliberate cost of
+    the snapshot (above). A "refresh this assessment from the bank" action is
+    the obvious escape hatch if anyone wants one.
+16. **Built-in templates are only as good as the bank.** They are composed at
+    seed time and refreshed by re-running the seed; they do not track the bank
+    automatically, and a very small bank silently yields fewer of them.
 
 Closed since v1.1.0: the synthesis-prompt risk skew (`56c6c50` — the prompt now
 asks for at least three finding kinds and caps any one at half the set; verified

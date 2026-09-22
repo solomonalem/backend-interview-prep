@@ -24,7 +24,11 @@ export function InterviewKitPanel({
   kit: Kit | null;
 }) {
   const [kit, setKit] = useState<Kit | null>(initial);
-  const [open, setOpen] = useState(Boolean(initial));
+  // Collapsed even when a kit already exists. The report is what someone
+  // opened this page to read; a guide for a conversation that has not happened
+  // yet should not be the first thing between them and the score. Generating
+  // one opens it, because that click WAS the request to see it.
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
