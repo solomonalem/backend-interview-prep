@@ -218,6 +218,9 @@ async function buildReport(
             orderBy: { position: 'asc' },
             select: {
               position: true,
+              // What was actually asked. An edit to the bank afterwards must
+              // not change what this report says the candidate answered.
+              snapshot_text: true,
               question: { select: { id: true, text: true, topic: true, difficulty: true } },
             },
           },
@@ -332,7 +335,7 @@ async function buildReport(
       questions: (session.assessment.questions.length
         ? session.assessment.questions.map((aq) => ({
             position: aq.position,
-            question: aq.question,
+            question: { ...aq.question, text: aq.snapshot_text ?? aq.question.text },
             answer: answersByQuestion.get(aq.question.id) ?? null,
           }))
         : session.answers.map((a) => ({

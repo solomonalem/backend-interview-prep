@@ -26,6 +26,23 @@ import {
   submitProbeAnswer,
 } from './probe.service.js';
 
+/**
+ * The question as this assessment asks it.
+ *
+ * The snapshot wins when there is one; a row that predates snapshots falls
+ * back to the live question, which is exactly how it behaved before.
+ */
+function candidateQuestion(aq: {
+  snapshot_text: string | null;
+  question: { id: string; text: string; topic: string };
+}): { id: string; text: string; topic: string } {
+  return {
+    id: aq.question.id,
+    text: aq.snapshot_text ?? aq.question.text,
+    topic: aq.question.topic,
+  };
+}
+
 /** null means no expiry: the link stays open until it is used. */
 function linkHasExpired(expiresAt: Date | null): boolean {
   return expiresAt !== null && expiresAt.getTime() < Date.now();
@@ -123,7 +140,7 @@ async function resumeSession(sessionId: string): Promise<StartSessionResponse> {
     session_token: sessionToken,
     expires_at:
       deadline !== null ? new Date(deadline).toISOString() : null,
-    first_question: { position: aq.position, question: aq.question },
+    first_question: { position: aq.position, question: candidateQuestion(aq) },
   };
 }
 
@@ -137,7 +154,16 @@ export async function startSession(linkToken: string): Promise<StartSessionRespo
         include: {
           questions: {
             orderBy: { position: 'asc' },
-            include: { question: { select: { id: true, text: true, topic: true } } },
+            // snapshot_text first: a candidate must see the question this
+            // assessment was built from, not a later edit of it.
+            select: {
+              position: true,
+              snapshot_text: true,
+              snapshot_core_answer_guide: true,
+              snapshot_senior_signal_guide: true,
+              snapshot_trap_guide: true,
+              question: { select: { id: true, text: true, topic: true } },
+            },
           },
         },
       },
@@ -196,7 +222,7 @@ export async function startSession(linkToken: string): Promise<StartSessionRespo
     session_id: session.id,
     session_token: sessionToken,
     expires_at: expiresAt,
-    first_question: { position: first.position, question: first.question },
+    first_question: { position: first.position, question: candidateQuestion(first) },
   };
 }
 
@@ -209,7 +235,16 @@ async function loadSessionWithAssessment(sessionId: string) {
         include: {
           questions: {
             orderBy: { position: 'asc' },
-            include: { question: { select: { id: true, text: true, topic: true } } },
+            // snapshot_text first: a candidate must see the question this
+            // assessment was built from, not a later edit of it.
+            select: {
+              position: true,
+              snapshot_text: true,
+              snapshot_core_answer_guide: true,
+              snapshot_senior_signal_guide: true,
+              snapshot_trap_guide: true,
+              question: { select: { id: true, text: true, topic: true } },
+            },
           },
         },
       },
@@ -381,7 +416,7 @@ export async function getQuestion(
   return {
     position,
     total,
-    question: aq.question,
+    question: candidateQuestion(aq),
     time_remaining_ms: deadline !== null ? Math.max(0, deadline - Date.now()) : null,
     draft: draft
       ? {
@@ -535,7 +570,8 @@ export async function submitAnswer(
     // The rubric guides are needed to judge where "one level deeper" is, and
     // they are private — fetched here rather than widened into the session's
     // question select, which is the shape the candidate receives.
-    const guides = await prisma.question.findUnique({
+    // Same rule as the scorer: the rubric this assessment was built with.
+    const live = await prisma.question.findUnique({
       where: { id: body.question_id },
       select: {
         text: true,
@@ -544,6 +580,14 @@ export async function submitAnswer(
         trap_guide: true,
       },
     });
+    const guides = live
+      ? {
+          text: aq.snapshot_text ?? live.text,
+          core_answer_guide: aq.snapshot_core_answer_guide ?? live.core_answer_guide,
+          senior_signal_guide: aq.snapshot_senior_signal_guide ?? live.senior_signal_guide,
+          trap_guide: aq.snapshot_trap_guide ?? live.trap_guide,
+        }
+      : null;
     if (guides) {
       probe = await createProbeForAnswer(
         answer.id,

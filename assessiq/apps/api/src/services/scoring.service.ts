@@ -292,11 +292,41 @@ export async function scoreAnswer(answerId: string): Promise<void> {
     where: { id: answerId },
     include: {
       question: true,
-      session: { include: { assessment: { select: { confidence_rating_enabled: true } } } },
+      session: {
+        include: { assessment: { select: { id: true, confidence_rating_enabled: true } } },
+      },
     },
   });
   if (!answer) throw new Error(`answer not found: ${answerId}`);
   if (answer.scoring_status === 'scored') return; // idempotent
+
+  // THE RUBRIC AS IT WAS. An answer is scored against the guides this
+  // assessment was built with, not against whatever the bank says today —
+  // otherwise editing a question rewrites how people were already judged.
+  // Falls back to the live question for assessments predating snapshots.
+  const snapshot = await prisma.assessmentQuestion.findUnique({
+    where: {
+      assessment_id_question_id: {
+        assessment_id: answer.session.assessment.id,
+        question_id: answer.question_id,
+      },
+    },
+    select: {
+      snapshot_text: true,
+      snapshot_core_answer_guide: true,
+      snapshot_senior_signal_guide: true,
+      snapshot_trap_guide: true,
+      snapshot_evidence_guide: true,
+    },
+  });
+  const rubric = {
+    text: snapshot?.snapshot_text ?? answer.question.text,
+    core_answer_guide: snapshot?.snapshot_core_answer_guide ?? answer.question.core_answer_guide,
+    senior_signal_guide:
+      snapshot?.snapshot_senior_signal_guide ?? answer.question.senior_signal_guide,
+    trap_guide: snapshot?.snapshot_trap_guide ?? answer.question.trap_guide,
+    evidence_guide: snapshot?.snapshot_evidence_guide ?? answer.question.evidence_guide,
+  };
 
   await prisma.answer.update({ where: { id: answerId }, data: { scoring_status: 'scoring' } });
 
@@ -308,7 +338,7 @@ export async function scoreAnswer(answerId: string): Promise<void> {
     answer.snippet_language,
   );
 
-  const { result, modelUsed } = await scoreAnswerText(answer.question, answerForModel, answer.id);
+  const { result, modelUsed } = await scoreAnswerText(rubric, answerForModel, answer.id);
 
   const total = weightedTotal(
     result.core_pct,
@@ -345,7 +375,7 @@ export async function scoreAnswer(answerId: string): Promise<void> {
 
   // After the answer's own score is committed — the defense is a comparison
   // against it, and a failure here must never roll back the score above.
-  await scoreDefenseFor(answerId, answer.question.text, answerForModel);
+  await scoreDefenseFor(answerId, rubric.text, answerForModel);
 }
 
 export async function markAnswerFailed(answerId: string): Promise<void> {

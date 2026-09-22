@@ -53,6 +53,16 @@ export interface DocumentGrounding {
 }
 
 // Public shape of a question — NEVER includes the private `_guide` rubric fields.
+/** What the bank knows about how a question has actually performed. */
+export interface QuestionUsage {
+  /** Assessments that include it. */
+  times_used: number;
+  /** Mean scored answer, or null when nobody has answered it yet. */
+  avg_score: number | null;
+  /** Scored answers behind that average. */
+  answer_count: number;
+}
+
 export interface QuestionListItem {
   id: string;
   text: string;
@@ -61,6 +71,13 @@ export interface QuestionListItem {
   type: QuestionType;
   domain: string | null;
   status: QuestionStatus;
+  /** Free-form labels. Always present, often empty. */
+  tags: string[];
+  /** false means archived — out of retrieval, still readable under the filter. */
+  is_active: boolean;
+  created_at: string;
+  /** Omitted on the candidate-facing paths; present in the bank. */
+  usage?: QuestionUsage;
   core_answer_display: string;
   senior_signal_display: string;
   trap_display: string;
@@ -79,6 +96,18 @@ export interface QuestionListResponse {
   pages: number;
 }
 
+/** How the bank is ordered. */
+export type QuestionSort = 'newest' | 'oldest' | 'most_used' | 'topic';
+
+export const QUESTION_SORTS: { value: QuestionSort; label: string }[] = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+  { value: 'most_used', label: 'Most used' },
+  { value: 'topic', label: 'Topic (A–Z)' },
+];
+
+export const BANK_PAGE_SIZES = [25, 50] as const;
+
 export interface QuestionFilters {
   topic?: string;
   /** Retrieve by provenance — used by the builder's "From your codebase" source. */
@@ -87,8 +116,74 @@ export interface QuestionFilters {
   type?: QuestionType;
   domain?: string;
   search?: string;
+  /** vetted or draft. Omitted means both. */
+  status?: QuestionStatus;
+  /** One tag, matched exactly. */
+  tag?: string;
+  /**
+   * Show archived questions INSTEAD of active ones. Deliberately not a
+   * three-way "all" — a bank view mixing live and archived questions is how
+   * an archived question ends up in an assessment.
+   */
+  archived?: boolean;
+  sort?: QuestionSort;
   page?: number;
   limit?: number;
+}
+
+/** PATCH /questions/:id — edit in place, or archive/restore. */
+export interface UpdateQuestionRequest {
+  text?: string;
+  topic?: string;
+  difficulty?: Difficulty;
+  type?: QuestionType;
+  core_answer_guide?: string;
+  senior_signal_guide?: string;
+  trap_guide?: string;
+  evidence_guide?: string;
+  core_answer_display?: string;
+  senior_signal_display?: string;
+  trap_display?: string;
+  tags?: string[];
+  /** false archives, true restores. Never changes status. */
+  is_active?: boolean;
+}
+
+// ── Export / import ──────────────────────────────────────────────────────────
+/** One question, whole, as it travels between banks. */
+export interface QuestionExportItem {
+  text: string;
+  topic: string;
+  difficulty: Difficulty;
+  type: QuestionType;
+  domain: string | null;
+  tags: string[];
+  core_answer_guide: string;
+  senior_signal_guide: string;
+  trap_guide: string;
+  evidence_guide: string;
+  core_answer_display: string;
+  senior_signal_display: string;
+  trap_display: string;
+}
+
+export interface QuestionExport {
+  /** Bumped if the shape ever changes; an importer can then refuse politely. */
+  version: 1;
+  exported_at: string;
+  questions: QuestionExportItem[];
+}
+
+export interface ImportQuestionsRequest {
+  questions: QuestionExportItem[];
+}
+
+export interface ImportQuestionsResponse {
+  /** Created as DRAFTS, always — the review gate is not bypassable by file. */
+  imported: number;
+  skipped: number;
+  /** Why anything was skipped, in the order it was skipped. */
+  notes: string[];
 }
 
 // ── GET /questions/match ─────────────────────────────────────────────────────
@@ -154,6 +249,10 @@ export interface QuestionDraft {
   senior_signal_display: string;
   trap_display: string;
   source: QuestionSource;
+  /** Free-form labels, so the edit panel can round-trip them. */
+  tags: string[];
+  /** false means archived. Shown so the panel can offer restore. */
+  is_active: boolean;
   /** Shown in the review panel so the manager can judge whether the question
    *  is fair and accurate about their own system. */
   grounding?: QuestionGrounding | null;

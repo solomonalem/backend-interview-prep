@@ -68,6 +68,11 @@ model Question {
   grounding_document_id String?
   grounding_document    GroundingDocument? @relation(fields: [grounding_document_id], references: [id], onDelete: SetNull)
 
+  // Free-form labels the manager applies. An array rather than a table
+  // because a tag has no properties, no lifecycle and no meaning beyond the
+  // string — the moment it needs an owner or a colour it should become one.
+  tags          String[]      @default([])
+
   // Metadata
   is_active     Boolean       @default(true)
   // vetted = human-approved and safe to use as-is. draft = AI-generated and
@@ -204,11 +209,36 @@ enum ProbesMode {
 }
 
 // Join table: Assessment ↔ Question (with ordering)
+// One question's place in one assessment — AND a copy of it as it was.
+//
+// THE SNAPSHOT. Before this, an assessment referenced a question by id and
+// everything read it live, which was harmless only while questions never
+// changed. This wave adds editing and archiving of vetted questions, so the
+// live reference becomes a way to rewrite history: edit a rubric and last
+// month's report now claims the candidate was scored against words that did
+// not exist when they answered.
+//
+// So the text and the four scoring guides are copied at assessment creation,
+// and the candidate flow, the scorer and the report all read the copy. The
+// tradeoff is real and accepted: an assessment does NOT pick up later
+// improvements to a question, and a typo fixed in the bank stays wrong in
+// assessments already built from it. That is the correct direction to be
+// wrong in — what was asked is a fact about the past, not a view of the
+// present.
+//
+// Nullable, with every reader falling back to the live question, so rows that
+// predate the snapshot keep working exactly as they did.
 model AssessmentQuestion {
   id            String      @id @default(cuid())
   assessment_id String
   question_id   String
   position      Int         // display order (0-indexed)
+
+  snapshot_text                String?
+  snapshot_core_answer_guide   String?
+  snapshot_senior_signal_guide String?
+  snapshot_trap_guide          String?
+  snapshot_evidence_guide      String?
 
   assessment    Assessment  @relation(fields: [assessment_id], references: [id], onDelete: Cascade)
   question      Question    @relation(fields: [question_id], references: [id])
