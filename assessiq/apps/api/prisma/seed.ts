@@ -1,5 +1,6 @@
 import { PrismaClient, Difficulty, QuestionType } from '@prisma/client';
 import { hashPassword } from '../src/lib/password.js';
+import { seedBuiltInTemplates } from './seed-templates.js';
 
 const prisma = new PrismaClient();
 
@@ -269,6 +270,10 @@ async function main() {
 
   const total = await prisma.question.count();
   console.log(`Done. ${total} questions in the bank.`);
+
+  // After the questions, always: built-ins are composed FROM the bank, so
+  // seeding them earlier would build templates out of nothing.
+  await seedBuiltInTemplates();
 }
 
 main()

@@ -22,6 +22,7 @@ model User {
   assessments   Assessment[]
   score_overrides Score[]     // scores this interviewer has overridden or flagged
   report_shares ReportShare[] // read-only report links they have handed out
+  templates     AssessmentTemplate[]
   repo_integrations RepoIntegration[]
   grounding_documents GroundingDocument[]
   candidates    Candidate[]
@@ -118,6 +119,42 @@ enum QuestionType {
 }
 
 // ─── ASSESSMENTS ─────────────────────────────────────────────────────────────
+
+// A saved starting point for an assessment.
+//
+// A template is a RECIPE, never a result: picking one opens the builder
+// pre-filled and fully editable, and nothing exists until the manager presses
+// create. That is the whole design constraint — a one-click "send the standard
+// backend screen" that still passes through the same review of what is
+// actually being asked.
+//
+// owner_id NULL means a built-in: seeded from the vetted bank, visible to
+// everyone, editable by nobody. A manager's own templates sit beside them.
+model AssessmentTemplate {
+  id          String   @id @default(cuid())
+  owner_id    String?
+  owner       User?    @relation(fields: [owner_id], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?
+
+  // Ordered, and deliberately a plain array rather than a join table: a
+  // template is a list of ids that may rot, not a set of live relations. A
+  // question that is later archived must not delete itself out of the
+  // template or block its use — the builder warns and drops it instead.
+  question_ids String[]
+
+  timer_minutes      Int?
+  proctoring_config  Json?
+  probes_mode        ProbesMode @default(flagged_only)
+  probe_time_seconds Int        @default(90)
+
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([owner_id])
+  @@map("assessment_templates")
+}
 
 model Assessment {
   id          String    @id @default(cuid())

@@ -5,6 +5,7 @@ export * from './question.js';
 export * from './roles.js';
 export * from './assessment.js';
 export * from './candidate.js';
+export * from './template.js';
 export * from './session.js';
 export * from './snippet.js';
 export * from './report.js';

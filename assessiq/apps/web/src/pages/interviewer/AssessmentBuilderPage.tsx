@@ -17,6 +17,8 @@ import {
   FileCode2,
   MessageCircleQuestion,
   BellRing,
+  LayoutTemplate,
+  AlertTriangle,
 } from 'lucide-react';
 import type {
   CreateAssessmentRequest,
@@ -28,6 +30,7 @@ import type {
   ProbesMode,
   QuestionMatchItem,
   QuestionType,
+  TemplateDetail,
 } from '@assessiq/types';
 import {
   DEFAULT_AUTO_REMINDER_DAYS,
@@ -40,6 +43,7 @@ import {
   supportedRolePresets,
 } from '@assessiq/types';
 import { questionsApi } from '../../api/questions.api';
+import { TemplatePicker } from '../../components/assessment/TemplatePicker';
 import { assessmentsApi } from '../../api/assessments.api';
 import { studyApi } from '../../api/study.api';
 import { ApiRequestError } from '../../api/client';
@@ -266,6 +270,10 @@ export default function AssessmentBuilderPage() {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  // What a template brought in, so the page can say so — including when it
+  // brought in less than it promised.
+  const [fromTemplate, setFromTemplate] = useState<{ title: string; missing: number } | null>(null);
 
   // Topic suggestions, so the manager can see what the bank actually covers
   // instead of guessing at free text.
@@ -575,6 +583,32 @@ export default function AssessmentBuilderPage() {
   const trayItems = useMemo(() => [...tray.values()], [tray]);
   const canSave = title.trim().length > 0 && tray.size > 0 && !saving;
 
+  /**
+   * Fill the builder in from a template.
+   *
+   * Everything lands in the ordinary state the manager edits by hand — there is
+   * no "template mode" to leave, and no hidden link back to the template once
+   * applied. A missing question is reported rather than quietly dropped: being
+   * handed a 5-question screen you believe is 6 is the failure worth avoiding.
+   */
+  const applyTemplate = (t: TemplateDetail) => {
+    setTray(new Map(t.questions.map((q) => [q.id, q as unknown as QuestionListItem])));
+    if (!title.trim()) setTitle(t.title);
+    setTimerOn(t.timer_minutes !== null);
+    if (t.timer_minutes) setMinutes(t.timer_minutes);
+    if (t.proctoring_config) {
+      setTrackTabs(t.proctoring_config.track_tab_switches);
+      setTrackFocus(t.proctoring_config.track_focus_loss);
+      setDetectPaste(t.proctoring_config.detect_paste);
+      setDetectIdle(t.proctoring_config.detect_idle);
+      setFlagThreshold(t.proctoring_config.tab_switch_flag_threshold);
+    }
+    setProbesMode(t.probes_mode);
+    setProbeSeconds(t.probe_time_seconds);
+    setFromTemplate({ title: t.title, missing: t.missing_count });
+    setPicking(false);
+  };
+
   const save = async () => {
     if (!canSave) return;
     setSaving(true);
@@ -632,6 +666,9 @@ export default function AssessmentBuilderPage() {
         subtitle="Describe the position, pick the questions you want, then generate a candidate link."
         actions={
           <>
+            <Button variant="secondary" onClick={() => setPicking(true)}>
+              <LayoutTemplate size={16} /> Start from a template
+            </Button>
             <Button variant="secondary" onClick={() => navigate('/dashboard')}>
               Cancel
             </Button>
@@ -642,6 +679,27 @@ export default function AssessmentBuilderPage() {
           </>
         }
       />
+
+      {fromTemplate && (
+        <div className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-brand-200 bg-brand-50/60 px-4 py-2.5 text-sm text-slate-700">
+          <LayoutTemplate size={15} className="text-brand-600" />
+          <span>
+            Started from <strong>{fromTemplate.title}</strong>. Everything below is yours to change.
+          </span>
+          {/* Said out loud, because a template that quietly shrank is worse
+              than one that failed. */}
+          {fromTemplate.missing > 0 && (
+            <span className="flex items-center gap-1.5 rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+              <AlertTriangle size={12} />
+              {fromTemplate.missing} question{fromTemplate.missing === 1 ? '' : 's'} from this
+              template {fromTemplate.missing === 1 ? 'is' : 'are'} no longer available and{' '}
+              {fromTemplate.missing === 1 ? 'was' : 'were'} left out
+            </span>
+          )}
+        </div>
+      )}
+
+      {picking && <TemplatePicker onApply={applyTemplate} onClose={() => setPicking(false)} />}
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* LEFT — position input + results */}

@@ -4,6 +4,7 @@ import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import { sendManualReminder } from '../services/reminder.service.js';
 import { getPreviewMeta, startPreviewSession } from '../services/preview.service.js';
+import { saveAssessmentAsTemplate } from '../services/template.service.js';
 import {
   createAssessment,
   createLink,
@@ -77,6 +78,24 @@ const createLinkSchema = z.object({
   expires_in_days: z.number().int().positive().max(365).nullable().optional(),
   confirm_duplicate: z.boolean().optional(),
 });
+
+const saveTemplateSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+  description: z.string().optional(),
+});
+
+// POST /assessments/:id/template — save this assessment as a personal template
+assessmentsRouter.post(
+  '/:id/template',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'assessment id is required');
+    const parsed = saveTemplateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid template');
+    res.status(201).json(await saveAssessmentAsTemplate(req.interviewer!.id, id, parsed.data));
+  }),
+);
 
 // GET /assessments/:id/preview — the instructions page content, as a
 // candidate would receive it
