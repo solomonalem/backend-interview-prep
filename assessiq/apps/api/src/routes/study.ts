@@ -9,6 +9,7 @@ import {
   getDeck,
   listStories,
   practice,
+  practiceDefense,
   recordProgress,
   updateStory,
 } from '../services/study.service.js';
@@ -38,14 +39,42 @@ studyRouter.post(
   }),
 );
 
-const practiceSchema = z.object({ question_id: z.string().min(1), answer_text: z.string() });
+const practiceSchema = z.object({
+  question_id: z.string().min(1),
+  answer_text: z.string(),
+  with_probe: z.boolean().optional(),
+});
 studyRouter.post(
   '/practice',
   authInterviewer,
   asyncHandler(async (req, res) => {
     const parsed = practiceSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(400, 'VALIDATION', 'question_id and answer_text are required');
-    res.json(await practice(parsed.data.question_id, parsed.data.answer_text));
+    res.json(
+      await practice(parsed.data.question_id, parsed.data.answer_text, {
+        withProbe: parsed.data.with_probe,
+      }),
+    );
+  }),
+);
+
+const practiceDefenseSchema = z.object({
+  question_id: z.string().min(1),
+  answer_text: z.string(),
+  probe_text: z.string().min(1),
+  defense_text: z.string(),
+  answer_total_pct: z.number().int().min(0).max(100),
+});
+
+// POST /study/practice/defense — score the follow-up, report the delta, and
+// (only when it went badly) bring the question forward in the deck.
+studyRouter.post(
+  '/practice/defense',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const parsed = practiceDefenseSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(400, 'VALIDATION', 'Invalid follow-up');
+    res.json(await practiceDefense(req.interviewer!.id, parsed.data));
   }),
 );
 

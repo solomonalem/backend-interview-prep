@@ -218,6 +218,33 @@ async function callDefenseScorer(user: string): Promise<DefenseResult> {
 }
 
 /**
+ * Score one defense, as a pure function.
+ *
+ * Extracted so job-seeker practice can reuse the exact scorer the interviewer
+ * side uses — the reduced rubric, the same instructions about ninety seconds
+ * of typing, the same stub rule. A practice delta computed by a different
+ * scorer would not be comparable to a real one, which would make it useless
+ * for the only thing it is for: learning what a real one would say.
+ */
+export async function scoreDefenseText(
+  questionText: string,
+  originalAnswer: string,
+  probeText: string,
+  defenseText: string,
+  seed = 'practice',
+): Promise<{ result: DefenseResult; modelUsed: string; defense_pct: number }> {
+  const user = buildDefensePrompt(questionText, originalAnswer, probeText, defenseText);
+  const { result, modelUsed } = anthropic
+    ? { result: await callDefenseScorer(user), modelUsed: SCORING_MODEL }
+    : { result: stubDefense(defenseText, seed), modelUsed: 'stub-dev' };
+  return {
+    result,
+    modelUsed,
+    defense_pct: defenseTotal(result.core_pct, result.senior_signal_pct),
+  };
+}
+
+/**
  * Score the defense attached to one answer, if there is one.
  *
  * Runs in the same job as the answer's own score, immediately after it, for two
@@ -256,15 +283,13 @@ async function scoreDefenseFor(answerId: string, questionText: string, originalA
   }
 
   try {
-    const user = buildDefensePrompt(
+    const { result, modelUsed, defense_pct } = await scoreDefenseText(
       questionText,
       originalAnswer,
       probe.text ?? '',
       defenseText,
+      probe.id,
     );
-    const { result, modelUsed } = anthropic
-      ? { result: await callDefenseScorer(user), modelUsed: SCORING_MODEL }
-      : { result: stubDefense(defenseText, probe.id), modelUsed: 'stub-dev' };
 
     await prisma.probe.update({
       where: { id: probe.id },
@@ -273,7 +298,7 @@ async function scoreDefenseFor(answerId: string, questionText: string, originalA
         defense_senior_signal_pct: result.senior_signal_pct,
         defense_core_reasoning: result.core_reasoning,
         defense_senior_reasoning: result.senior_signal_reasoning,
-        defense_pct: defenseTotal(result.core_pct, result.senior_signal_pct),
+        defense_pct,
         model_used: modelUsed,
         scored_at: new Date(),
       },
