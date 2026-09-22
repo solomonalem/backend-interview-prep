@@ -210,7 +210,7 @@ behind a dynamic `highlight.js` import that leaves the main bundle untouched.
 and a sketch is only their own input echoed back. Build spec:
 `docs/BUILD_CODE_SNIPPET.md`.
 
-### The post-assessment layer (built, PR open to `develop`)
+### The post-assessment layer (merged to `develop`, PR #32)
 What happens after a candidate submits: records, reuse, and a report that
 travels. **Candidates still click links; managers keep records** — there is no
 candidate account, password or portal anywhere in this wave.
@@ -249,6 +249,42 @@ candidate account, password or portal anywhere in this wave.
   a missing browser answers **503 with the install command**.
 
 Build spec: `docs/BUILD_POST_ASSESSMENT.md`.
+
+### Candidate-side robustness (built, PR open to `develop`)
+Three gaps a real candidate or manager hits immediately, all pre-existing.
+
+- **Answers survive the clock.** Drafts autosave (3s debounce, on blur, when
+  the tab hides, before the session closes) to `answer_drafts` — **a separate
+  table, not columns on `Answer`**, because an Answer row is what counts
+  progress, feeds scoring and fills the report, and a draft living there would
+  have to be filtered out of every one of those paths. At expiry the latest
+  draft becomes the answer with `source: draft_at_expiry`, labelled on the
+  report as "Auto-submitted from draft at time-up". **`EXPIRY_GRACE_SECONDS =
+  10`** lets the in-flight autosave land; it never extends the visible timer,
+  and a write inside it records a `late_write` event the report frames as
+  mechanics, not suspicion. **Resume**: a link with an unfinished session now
+  resumes instead of answering `LINK_USED` — work you can't get back to isn't
+  saved work — with the store in `sessionStorage` for the fast path. Closes
+  follow-ups #7 and #9.
+- **Link expiry a manager chooses.** `expires_at` already existed and was
+  already enforced; it is now **nullable** (NULL = no expiry) and picked at
+  invite time (3 / 7 / 14 days / none, default 7). Expiry gates *starting*
+  only — a session in progress is governed by its own timer. An expired link
+  answers `LINK_EXPIRED` with its own page, and can be extended from the row,
+  counted from today.
+- **Reminders.** Manual per link (reports sent / failed / skipped, stamps the
+  time). Automatic opt-in per assessment (`auto_reminder_days`, off by
+  default), swept daily at **09:00 UTC** plus once ~10s after worker boot —
+  safe because `auto_reminder_sent_at` caps it at **one automatic reminder per
+  link, ever**.
+- **Preview as candidate.** `/preview/:assessmentId` renders the *same*
+  candidate components behind the manager's login: real timer, real
+  disclosures, real probes. `Session.is_preview` excludes it from everything —
+  the submit path returns before the scoring queue, and a preview has no link,
+  so nothing that walks links can see it. Banner on every screen; previews
+  older than 24h are deleted when the next one starts.
+
+Build spec: `docs/BUILD_CANDIDATE_ROBUSTNESS.md`.
 
 ### Job-seeker flow (Prepare mode)
 Spaced-repetition deck, timed practice with AI feedback, STAR story bank with
@@ -372,10 +408,12 @@ code snippet field** (PR #31) are all merged. Sections **C** (pricing /
 multi-tenancy) and **E** (live manager mode) remain designs only, each with a
 stated trigger to revisit.
 
-The wave after it — **the post-assessment layer** (`docs/BUILD_POST_ASSESSMENT.md`:
-candidate records, send-another, shareable report links, PDF export) — is built
-and described in the status section above. **PDF export is therefore closed**;
-it was follow-up (2) in the list below.
+Two waves have shipped since: **the post-assessment layer**
+(`docs/BUILD_POST_ASSESSMENT.md` — candidate records, send-another, shareable
+report links, PDF export, merged as PR #32) and **candidate-side robustness**
+(`docs/BUILD_CANDIDATE_ROBUSTNESS.md` — autosave + expiry grace, link expiry +
+reminders, preview as candidate). Both are described in the status section
+above. **Follow-ups #2, #7 and #9 are therefore closed.**
 
 ### Follow-ups and deliberate exclusions
 
@@ -406,24 +444,18 @@ Nothing is half-finished; these are known gaps, roughly in value order.
    arrive (a real change to the queue's shape) or accepting that the top-band
    half of that rule is unreachable. Currently the latter, stated in the code
    at `probeIsDue`.
-7. **A server-expired session never enqueues scoring.** `ensureActive`
-   auto-submits a session whose timer elapsed but does not queue its answers,
-   so a candidate who abandons the tab past the deadline gets no report. Only
-   reachable when the client-side timer never fires; predates the probes work,
-   found while reading that path.
+7. ~~A server-expired session never enqueues scoring~~ — **done** in the
+   candidate-robustness wave. `closeExpiredSession` now promotes drafts,
+   finalises probes AND queues scoring, so an abandoned tab still produces a
+   report.
 8. **The bank page shows only the first 100 questions.** `QuestionBankPage`
    fetches `limit: 100` ordered oldest-first with no pagination control, so the
    newest questions — including freshly generated grounded ones — are reachable
    only through search. Pre-dates Feature A; noticed while testing it.
-9. **An in-progress answer is not submitted when the timer expires.** At zero
-   the client submits the *session*, not the answer being typed, and the
-   server would refuse it anyway — `ensureActive` rejects any write past the
-   deadline. So a candidate mid-answer at expiry loses that answer, and now
-   its code sketch with it. Pre-dates the sketch field and is the same root as
-   (7): closing it means a server-side grace window for one final answer, which
-   has proctoring implications worth deciding deliberately rather than as part
-   of a feature. `docs/BUILD_CODE_SNIPPET.md` assumes an autosave/draft layer
-   that has never existed in this codebase.
+9. ~~An in-progress answer is not submitted when the timer expires~~ —
+   **done** in the candidate-robustness wave: drafts autosave, a 10s server
+   grace window absorbs the last one, and at expiry it is promoted to the
+   answer and labelled as such on the report.
 
 10. **Share links have no time-based expiry.** Revocation only, deliberately
     scoped that way for this wave. An expiring share (and a "revoke all" on a
@@ -432,6 +464,17 @@ Nothing is half-finished; these are known gaps, roughly in value order.
     would collide is refused with the other record named; the manager has to
     resolve it by hand. Out of scope this wave on purpose — a merge silently
     picking a name, notes and history is a destructive operation with no undo.
+
+12. **Preview sessions leave `pending` answers behind until cleanup.** A
+    preview never enqueues scoring, so its answers sit at `scoring_status:
+    pending` for up to 24h before the next preview deletes the session. Inert
+    — nothing sweeps pending answers globally — but it means "pending" is not
+    a reliable global signal if anything ever wants one.
+13. **Automatic reminders are one-shot by design.** A link that was reminded
+    once is never reminded again automatically, even if the expiry is later
+    extended by weeks. Manual reminders are the escape hatch; a "reset the
+    automatic reminder when a link is extended" rule is the obvious follow-up
+    if anyone wants it.
 
 Closed since v1.1.0: the synthesis-prompt risk skew (`56c6c50` — the prompt now
 asks for at least three finding kinds and caps any one at half the set; verified
