@@ -261,6 +261,12 @@ async function closeExpiredSession(sessionId: string): Promise<void> {
   });
   // A probe still on screen when the session clock ran out was not answered.
   await finalizeOpenProbes(sessionId);
+
+  const s = await prisma.session.findUnique({
+    where: { id: sessionId },
+    select: { is_preview: true },
+  });
+  if (s?.is_preview) return;
   await enqueueScoring(sessionId);
 }
 
@@ -591,7 +597,7 @@ export async function recordEvents(
 export async function submitSession(sessionId: string): Promise<SubmitSessionResponse> {
   const s = await prisma.session.findUnique({
     where: { id: sessionId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, is_preview: true },
   });
   if (!s) throw new AppError(404, 'SESSION_NOT_FOUND', 'Session not found');
 
@@ -609,6 +615,15 @@ export async function submitSession(sessionId: string): Promise<SubmitSessionRes
   // whether there is a defense to score, and `generated` means "still on
   // screen", which nothing is once the session is submitted.
   await finalizeOpenProbes(sessionId);
+
+  // THE ONE PLACE A PREVIEW DIVERGES. Everything above this line happened
+  // exactly as it would for a candidate — that is what makes it a preview —
+  // but a manager walking their own assessment must not produce a score, a
+  // report, or a row anyone could mistake for a real result.
+  if (s.is_preview) {
+    return { ok: true, message: 'Preview finished. Nothing was recorded.' };
+  }
+
   await enqueueScoring(sessionId);
   return { ok: true, message: 'Your assessment has been submitted. Thank you.' };
 }

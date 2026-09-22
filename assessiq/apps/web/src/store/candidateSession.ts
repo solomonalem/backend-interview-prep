@@ -18,6 +18,8 @@ interface CandidateSessionState {
   /** Whether follow-ups can appear. Only used to explain the wait after a
    *  submit — never to predict whether one will fire. */
   probesEnabled: boolean;
+  /** A manager walking their own assessment. Nothing here is recorded. */
+  preview: boolean;
   firstQuestion: { position: number; question: CandidateQuestion } | null;
   start: (data: {
     linkToken: string;
@@ -27,6 +29,7 @@ interface CandidateSessionState {
     total: number;
     confidenceEnabled: boolean;
     probesEnabled: boolean;
+    preview?: boolean;
     firstQuestion: { position: number; question: CandidateQuestion };
   }) => void;
   clear: () => void;
@@ -44,6 +47,7 @@ const EMPTY: Persisted = {
   total: 0,
   confidenceEnabled: true,
   probesEnabled: false,
+  preview: false,
   firstQuestion: null,
 };
 
@@ -70,8 +74,9 @@ export const useCandidateSession = create<CandidateSessionState>((set) => ({
   ...load(),
   start: (data) =>
     set(() => {
-      save({ ...EMPTY, ...data });
-      return { ...data };
+      const next = { ...EMPTY, ...data, preview: data.preview ?? false };
+      save(next);
+      return next;
     }),
   clear: () =>
     set(() => {

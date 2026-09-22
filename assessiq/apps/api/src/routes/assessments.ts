@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authInterviewer } from '../middleware/auth.middleware.js';
 import { AppError, asyncHandler } from '../middleware/error.middleware.js';
 import { sendManualReminder } from '../services/reminder.service.js';
+import { getPreviewMeta, startPreviewSession } from '../services/preview.service.js';
 import {
   createAssessment,
   createLink,
@@ -76,6 +77,30 @@ const createLinkSchema = z.object({
   expires_in_days: z.number().int().positive().max(365).nullable().optional(),
   confirm_duplicate: z.boolean().optional(),
 });
+
+// GET /assessments/:id/preview — the instructions page content, as a
+// candidate would receive it
+assessmentsRouter.get(
+  '/:id/preview',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'assessment id is required');
+    res.json(await getPreviewMeta(req.interviewer!.id, id));
+  }),
+);
+
+// POST /assessments/:id/preview — walk your own assessment. Real session, real
+// probes, no scoring and no record: see preview.service.
+assessmentsRouter.post(
+  '/:id/preview',
+  authInterviewer,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!id) throw new AppError(400, 'VALIDATION', 'assessment id is required');
+    res.status(201).json(await startPreviewSession(req.interviewer!.id, id));
+  }),
+);
 
 // POST /assessments/:id/links — generate a shareable candidate link
 assessmentsRouter.post(

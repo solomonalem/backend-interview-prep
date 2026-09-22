@@ -5,6 +5,7 @@ import type { BehaviorEventInput, CandidateProbe, CandidateQuestion, SnippetLang
 import { SNIPPET_DEFAULT_LANGUAGE, SNIPPET_MAX_CHARS } from '@assessiq/types';
 import { Badge, Button, ProgressBar, Textarea, Spinner } from '../../components/ui';
 import { CodeSketchField } from '../../components/session/CodeSketchField';
+import { PreviewBanner } from '../../components/session/PreviewBanner';
 import { cn } from '../../lib/cn';
 import { sessionsApi } from '../../api/sessions.api';
 import { ApiRequestError } from '../../api/client';
@@ -17,8 +18,11 @@ function fmt(ms: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export default function CandidateAssessmentPage() {
-  const { token } = useParams();
+export default function CandidateAssessmentPage({ preview = false }: { preview?: boolean } = {}) {
+  const { token, assessmentId } = useParams();
+  // Where this flow's pages live. A preview runs the same component against
+  // the same endpoints; only the URLs around it differ.
+  const base = preview ? `/preview/${assessmentId}` : `/a/${token}`;
   const navigate = useNavigate();
   const s = useCandidateSession();
 
@@ -88,14 +92,14 @@ export default function CandidateAssessmentPage() {
   // No active session (e.g. page refresh) → back to the landing page.
   useEffect(() => {
     if (!sessionId || !sessionToken || !question) {
-      navigate(`/a/${token}`, { replace: true });
+      navigate(base, { replace: true });
     }
-  }, [sessionId, sessionToken, question, navigate, token]);
+  }, [sessionId, sessionToken, question, navigate, base]);
 
   const finish = () => {
     if (finished.current) return;
     finished.current = true;
-    navigate(`/a/${token}/done`);
+    navigate(`${base}/done`);
   };
 
   const flushEvents = async () => {
@@ -289,7 +293,9 @@ export default function CandidateAssessmentPage() {
           <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-amber-600">
             <TimerOff size={22} />
           </span>
-          <h2 className="text-lg font-bold text-slate-800">Time's up</h2>
+          <h2 className="text-lg font-bold text-slate-800">
+            {preview ? 'Time\u2019s up (preview)' : "Time's up"}
+          </h2>
           <p className="mt-2 text-sm text-slate-600 leading-relaxed">
             {timeUp === 'submitting'
               ? 'Your time limit has been reached. Saving what you had written and submitting now…'
@@ -456,6 +462,11 @@ export default function CandidateAssessmentPage() {
     const probeLow = probeRemainingMs <= 15_000;
     return (
       <div className="flex-1 flex flex-col">
+        {preview && (
+          <div className="flex justify-center px-6 pt-4">
+            <PreviewBanner />
+          </div>
+        )}
         <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
           <div className="mx-auto w-full max-w-2xl px-6 py-3">
             <div className="flex items-center justify-between gap-4">
@@ -543,6 +554,11 @@ export default function CandidateAssessmentPage() {
 
   return (
     <div className="flex-1 flex flex-col">
+      {preview && (
+        <div className="flex justify-center px-6 pt-4">
+          <PreviewBanner />
+        </div>
+      )}
       {/* Top bar */}
       <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto w-full max-w-2xl px-6 py-3">

@@ -1,5 +1,7 @@
 import type {
   AssessmentDetail,
+  LinkValidateResponse,
+  StartSessionResponse,
   SendReminderResponse,
   UpdateLinkRequest,
   AssessmentDetailLink,
@@ -24,4 +26,12 @@ export const assessmentsApi = {
     api.patch<AssessmentDetailLink>(`/assessments/${id}/links/${linkId}`, body),
   sendReminder: (id: string, linkId: string) =>
     api.post<SendReminderResponse>(`/assessments/${id}/links/${linkId}/reminder`),
+
+  // ── Preview as candidate ───────────────────────────────────────────────────
+  // The same two calls the candidate flow makes, against the manager's own
+  // assessment, so the preview can reuse the candidate pages unchanged.
+  previewMeta: (id: string) =>
+    api.get<{ assessment: LinkValidateResponse['assessment'] }>(`/assessments/${id}/preview`),
+  startPreview: (id: string) =>
+    api.post<StartSessionResponse>(`/assessments/${id}/preview`),
 };

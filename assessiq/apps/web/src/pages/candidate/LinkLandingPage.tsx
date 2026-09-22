@@ -14,14 +14,27 @@ import type { LinkValidateResponse } from '@assessiq/types';
 import { Button, Card, CardBody, Spinner } from '../../components/ui';
 import { cn } from '../../lib/cn';
 import { sessionsApi } from '../../api/sessions.api';
+import { assessmentsApi } from '../../api/assessments.api';
 import { ApiRequestError } from '../../api/client';
 import { useCandidateSession } from '../../store/candidateSession';
+import { PreviewBanner } from '../../components/session/PreviewBanner';
 
 type Meta = LinkValidateResponse['assessment'];
 
-export default function LinkLandingPage() {
-  const { token } = useParams();
+/**
+ * The instructions page — for a candidate, and for a manager previewing.
+ *
+ * One component rather than two: a preview whose instructions page is a
+ * lookalike stops being evidence of what the candidate will see the first time
+ * the two drift. The only differences are where the session comes from and a
+ * banner saying nothing is recorded.
+ */
+export default function LinkLandingPage({ preview = false }: { preview?: boolean } = {}) {
+  const { token, assessmentId } = useParams();
   const navigate = useNavigate();
+  // Whichever id this flow is keyed on, and the path its pages live under.
+  const id = preview ? assessmentId : token;
+  const base = preview ? `/preview/${assessmentId}` : `/a/${token}`;
   const startSession = useCandidateSession((s) => s.start);
 
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -35,9 +48,11 @@ export default function LinkLandingPage() {
   const [resumable, setResumable] = useState(false);
 
   useEffect(() => {
-    if (!token) return;
-    sessionsApi
-      .validateLink(token)
+    if (!id) return;
+    (preview
+      ? assessmentsApi.previewMeta(id).then((r) => ({ ...r, resumable: false }))
+      : sessionsApi.validateLink(id)
+    )
       .then((r) => {
         setMeta(r.assessment);
         setResumable(r.resumable);
@@ -57,25 +72,27 @@ export default function LinkLandingPage() {
         }
       })
       .finally(() => setLoading(false));
-  }, [token]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, preview]);
 
   const begin = async () => {
-    if (!ready || !token) return;
+    if (!ready || !id) return;
     setStarting(true);
     setStartError(null);
     try {
-      const res = await sessionsApi.start(token);
+      const res = preview ? await assessmentsApi.startPreview(id) : await sessionsApi.start(id);
       startSession({
-        linkToken: token,
+        linkToken: id,
         sessionId: res.session_id,
         sessionToken: res.session_token,
         expiresAt: res.expires_at,
         total: meta?.question_count ?? 1,
         confidenceEnabled: meta?.confidence_rating_enabled ?? false,
         probesEnabled: meta?.probes_enabled ?? false,
+        preview,
         firstQuestion: res.first_question,
       });
-      navigate(`/a/${token}/session`);
+      navigate(`${base}/session`);
     } catch (err) {
       setStartError(
         err instanceof ApiRequestError ? err.message : 'Could not start the assessment.',
@@ -113,7 +130,8 @@ export default function LinkLandingPage() {
     : 'No time limit';
 
   return (
-    <div className="flex-1 flex items-center justify-center px-6 py-10">
+    <div className="flex-1 flex flex-col items-center justify-center px-6 py-10">
+      {preview && <PreviewBanner />}
       <div className="w-full max-w-2xl">
         <Card className="overflow-hidden">
           <div className="bg-brand-gradient px-8 py-8 text-white relative overflow-hidden">

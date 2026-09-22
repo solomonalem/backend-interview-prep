@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   BellRing,
   CalendarPlus,
+  Eye,
 } from 'lucide-react';
 import type {
   CreateLinkResponse,
@@ -279,9 +280,19 @@ export default function AssessmentDetailPage() {
         title={detail.title}
         subtitle={`${detail.questions.length} questions · ${timerLabel}`}
         actions={
-          <Link to="/dashboard">
-            <Button variant="secondary">Back to dashboard</Button>
-          </Link>
+          <div className="flex gap-2">
+            {/* Before sending it to anyone: the only way to find out that a
+                20-minute timer is brutal without a candidate finding out
+                first. */}
+            <Link to={`/preview/${detail.id}`}>
+              <Button variant="secondary">
+                <Eye size={15} /> Preview as candidate
+              </Button>
+            </Link>
+            <Link to="/dashboard">
+              <Button variant="secondary">Back to dashboard</Button>
+            </Link>
+          </div>
         }
       />
 

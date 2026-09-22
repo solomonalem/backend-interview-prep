@@ -264,6 +264,14 @@ model Session {
 
   candidate_label String?         // carried from AssessmentLink
 
+  // A manager walking their own assessment to see what they are sending.
+  //
+  // Preview sessions are real sessions — the same questions, timer, proctoring
+  // and follow-ups, because a preview that behaves differently is not a
+  // preview. What they never become is DATA: no scoring, no report, no
+  // candidate record, nothing in a dashboard. They are deleted after a day.
+  is_preview      Boolean         @default(false)
+
   status          SessionStatus   @default(not_started)
   started_at      DateTime?
   submitted_at    DateTime?       // null until submitted
