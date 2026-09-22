@@ -8,12 +8,14 @@ import type {
   CreateLinkRequest,
   CreateLinkResponse,
   DuplicateCandidate,
+  UpdateLinkRequest,
   InviteEmailStatus,
   Difficulty,
   ProctoringConfig,
   QuestionType,
 } from '@assessiq/types';
 import {
+  DEFAULT_LINK_EXPIRY_DAYS,
   DEFAULT_PROBE_SECONDS,
   DEFAULT_PROBES_MODE,
   MAX_PROBE_SECONDS,
@@ -26,7 +28,18 @@ import { generateToken } from '../utils/token.js';
 import { findOrCreateCandidate } from './candidate.service.js';
 import { sendCandidateInvite } from './email.service.js';
 
-const DEFAULT_EXPIRES_HOURS = 168; // 7 days
+/**
+ * When a link stops accepting new starts.
+ *
+ * `undefined` means "the manager didn't say", which gets the default; an
+ * explicit `null` means they did say, and said no expiry. The two are not the
+ * same, so they are not collapsed.
+ */
+function expiryFromDays(days: number | null | undefined): Date | null {
+  if (days === null) return null;
+  const d = days ?? DEFAULT_LINK_EXPIRY_DAYS;
+  return new Date(Date.now() + d * 24 * 60 * 60 * 1000);
+}
 
 /** Clamped rather than rejected: the range exists because a defense should be a
  *  reflex and not a second essay, and a manager who types 300 wants "longer",
@@ -41,7 +54,7 @@ function clampProbeSeconds(seconds: number | undefined): number {
 // would eventually disagree.
 type LinkWithSession = {
   opened_at: Date | null;
-  expires_at: Date;
+  expires_at: Date | null;
   session: { status: string; report: { overall_pct: number } | null } | null;
 };
 
@@ -79,6 +92,7 @@ export async function createAssessment(
       timer_enabled: input.timer_enabled,
       timer_seconds: input.timer_enabled ? (input.timer_seconds ?? null) : null,
       confidence_rating_enabled: input.confidence_rating_enabled,
+      auto_reminder_days: input.auto_reminder_days ?? null,
       // The request wins; an omitted mode gets flagged_only, NOT the column
       // default. The column default exists to leave pre-feature assessments
       // alone, and inheriting it here would quietly turn the feature off for
@@ -134,6 +148,7 @@ export async function listAssessments(ownerId: string): Promise<AssessmentListRe
         candidate_label: link.candidate_label,
         candidate_email: link.candidate_email,
         candidate_id: link.candidate_id,
+        expires_at: link.expires_at?.toISOString() ?? null,
         status: deriveLinkStatus(link),
         overall_score: linkOverallScore(link),
       })),
@@ -188,7 +203,8 @@ export async function getAssessmentDetail(
         candidate_label: link.candidate_label,
         candidate_email: link.candidate_email,
         candidate_id: link.candidate_id,
-        expires_at: link.expires_at.toISOString(),
+        expires_at: link.expires_at?.toISOString() ?? null,
+        reminder_sent_at: link.reminder_sent_at?.toISOString() ?? null,
         status,
         ...(link.session
           ? {
@@ -238,11 +254,11 @@ async function nextDefaultLabel(assessmentId: string): Promise<string> {
  * unlabelled fallback — the ~10 links created before defaults existed can be
  * given real names this way.
  */
-export async function updateLinkLabel(
+export async function updateLink(
   ownerId: string,
   assessmentId: string,
   linkId: string,
-  candidateLabel: string | null,
+  input: UpdateLinkRequest,
 ): Promise<AssessmentDetailLink> {
   const link = await prisma.assessmentLink.findFirst({
     where: { id: linkId, assessment_id: assessmentId, assessment: { owner_id: ownerId } },
@@ -250,10 +266,19 @@ export async function updateLinkLabel(
   });
   if (!link) throw new AppError(404, 'LINK_NOT_FOUND', 'Candidate link not found');
 
-  const trimmed = candidateLabel?.trim();
+  const trimmed = input.candidate_label?.trim();
   await prisma.assessmentLink.update({
     where: { id: linkId },
-    data: { candidate_label: trimmed ? trimmed : null },
+    data: {
+      ...(input.candidate_label !== undefined
+        ? { candidate_label: trimmed ? trimmed : null }
+        : {}),
+      // Counted from now: extending a link that lapsed yesterday by "3 days"
+      // means three days from today, which is what the manager meant.
+      ...(input.expires_in_days !== undefined
+        ? { expires_at: expiryFromDays(input.expires_in_days) }
+        : {}),
+    },
   });
 
   // Re-read through the detail path so the caller gets the same shape (and
@@ -327,8 +352,7 @@ export async function createLink(
     }
   }
 
-  const hours = input.expires_in_hours ?? DEFAULT_EXPIRES_HOURS;
-  const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+  const expiresAt = expiryFromDays(input.expires_in_days);
 
   // Generate a unique token (retry on the astronomically-unlikely collision).
   let token = generateToken();
@@ -372,7 +396,7 @@ export async function createLink(
       assessmentTitle: assessment.title,
       fromName: assessment.owner.name || assessment.owner.email,
       url: `${baseUrl}/a/${link.token}`,
-      expiresAt: link.expires_at.toISOString(),
+      expiresAt: link.expires_at?.toISOString() ?? null,
     });
   }
 
@@ -384,6 +408,6 @@ export async function createLink(
     email_status: email.status,
     ...(email.error ? { email_error: email.error } : {}),
     url: `${baseUrl}/a/${link.token}`,
-    expires_at: link.expires_at.toISOString(),
+    expires_at: link.expires_at?.toISOString() ?? null,
   };
 }

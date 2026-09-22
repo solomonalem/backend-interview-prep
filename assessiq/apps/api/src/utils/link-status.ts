@@ -11,7 +11,8 @@ import type { LinkStatus } from '@assessiq/types';
  */
 export interface LinkStatusInput {
   opened_at: Date | null;
-  expires_at: Date;
+  /** null means no expiry — the link stays open until it is used. */
+  expires_at: Date | null;
   session: { status: string } | null;
 }
 
@@ -28,7 +29,7 @@ export function deriveLinkStatus(link: LinkStatusInput): LinkStatus {
         return 'opened'; // a session exists but was never started
     }
   }
-  if (link.expires_at.getTime() < Date.now()) return 'expired';
+  if (link.expires_at !== null && link.expires_at.getTime() < Date.now()) return 'expired';
   if (link.opened_at) return 'opened';
   return 'not_opened';
 }

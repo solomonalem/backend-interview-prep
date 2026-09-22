@@ -103,6 +103,13 @@ export interface ReportQuestion {
     snippet_code: string | null;
     /** null when nothing was attached; 'auto' when they left it undeclared. */
     snippet_language: SnippetLanguage | null;
+    /**
+     * `submitted` — they pressed the button.
+     * `draft_at_expiry` — the clock ran out first and their last autosave was
+     * promoted. Shown on the report, because a reader is entitled to know
+     * whether the candidate chose to hand this in.
+     */
+    source: 'submitted' | 'draft_at_expiry';
   } | null;
   score: ReportScore | null;
   confidence_rating: number | null;
@@ -170,6 +177,12 @@ export interface ReportView {
     focus_loss_count: number;
     paste_events: ReportPasteEvent[];
     idle_count: number;
+    /**
+     * Writes the server accepted inside the expiry grace window — an autosave
+     * that was in flight when the clock hit zero. Context, not a flag: it is
+     * expected mechanics, and the report says so.
+     */
+    late_write_count: number;
     context_note: string;
   };
   questions: ReportQuestion[];

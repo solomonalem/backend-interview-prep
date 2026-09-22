@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowRight, MessageCircleQuestion, Send, TimerOff } from 'lucide-react';
+import { ArrowRight, Check, CloudOff, MessageCircleQuestion, RotateCcw, Send, TimerOff } from 'lucide-react';
 import type { BehaviorEventInput, CandidateProbe, CandidateQuestion, SnippetLanguage } from '@assessiq/types';
 import { SNIPPET_DEFAULT_LANGUAGE, SNIPPET_MAX_CHARS } from '@assessiq/types';
 import { Badge, Button, ProgressBar, Textarea, Spinner } from '../../components/ui';
 import { CodeSketchField } from '../../components/session/CodeSketchField';
+import { PreviewBanner } from '../../components/session/PreviewBanner';
 import { cn } from '../../lib/cn';
 import { sessionsApi } from '../../api/sessions.api';
 import { ApiRequestError } from '../../api/client';
@@ -17,8 +18,11 @@ function fmt(ms: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export default function CandidateAssessmentPage() {
-  const { token } = useParams();
+export default function CandidateAssessmentPage({ preview = false }: { preview?: boolean } = {}) {
+  const { token, assessmentId } = useParams();
+  // Where this flow's pages live. A preview runs the same component against
+  // the same endpoints; only the URLs around it differ.
+  const base = preview ? `/preview/${assessmentId}` : `/a/${token}`;
   const navigate = useNavigate();
   const s = useCandidateSession();
 
@@ -32,6 +36,13 @@ export default function CandidateAssessmentPage() {
   const [sketch, setSketch] = useState('');
   const [sketchLang, setSketchLang] = useState<SnippetLanguage>(SNIPPET_DEFAULT_LANGUAGE);
   const [confidence, setConfidence] = useState<number | null>(null);
+  // What the autosave is doing. 'restored' is shown once, when work that
+  // survived a reload is put back on screen; 'unsaved' only appears after a
+  // save has actually failed, because an indicator that cries wolf while
+  // someone is typing is worse than none.
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'unsaved' | 'restored'>(
+    'idle',
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // null while the timer is running; then the two stages of expiry.
@@ -60,6 +71,18 @@ export default function CandidateAssessmentPage() {
   // Latest submitProbe, so the countdown effect (which must be declared above
   // the early returns) can fire the same function the button does.
   const submitProbeRef = useRef<(() => Promise<void>) | null>(null);
+  const questionRef = useRef<CandidateQuestion | null>(question);
+  questionRef.current = question;
+  // Set below, once handleSessionClosed exists — the loader runs before it in
+  // source order but never before it in time.
+  const handleSessionClosedRef = useRef<((err: unknown) => boolean) | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The countdown effect is declared above saveNow and cannot see its closure.
+  const saveNowRef = useRef<(() => Promise<void>) | null>(null);
+  // The latest draft, readable from timers and listeners that cannot see the
+  // current render's closure.
+  const draftRef = useRef({ text: '', snippet: '', lang: SNIPPET_DEFAULT_LANGUAGE as SnippetLanguage });
+  draftRef.current = { text: draft, snippet: sketch, lang: sketchLang };
   const events = useRef<BehaviorEventInput[]>([]);
   const lastActivity = useRef(Date.now());
   const finished = useRef(false);
@@ -69,14 +92,14 @@ export default function CandidateAssessmentPage() {
   // No active session (e.g. page refresh) → back to the landing page.
   useEffect(() => {
     if (!sessionId || !sessionToken || !question) {
-      navigate(`/a/${token}`, { replace: true });
+      navigate(base, { replace: true });
     }
-  }, [sessionId, sessionToken, question, navigate, token]);
+  }, [sessionId, sessionToken, question, navigate, base]);
 
   const finish = () => {
     if (finished.current) return;
     finished.current = true;
-    navigate(`/a/${token}/done`);
+    navigate(`${base}/done`);
   };
 
   const flushEvents = async () => {
@@ -97,6 +120,93 @@ export default function CandidateAssessmentPage() {
       ...extra,
     });
   };
+
+  /**
+   * Save what is in the boxes.
+   *
+   * Never blocks typing and never throws at the caller: a failed save shows an
+   * indicator and is retried by the next keystroke, because the one thing an
+   * autosave must not do is interrupt the person it exists to protect.
+   */
+  const saveDraft = async (): Promise<void> => {
+    const q = questionRef.current;
+    if (!sessionId || !sessionToken || !q) return;
+    const { text, snippet, lang } = draftRef.current;
+    setSaveState('saving');
+    try {
+      await sessionsApi.saveDraft(
+        sessionId,
+        q.id,
+        {
+          text,
+          ...(snippet.trim() ? { snippet_code: snippet, snippet_language: lang } : {}),
+        },
+        sessionToken,
+      );
+      setSaveState('saved');
+    } catch {
+      setSaveState('unsaved');
+    }
+  };
+
+  // Debounced while typing; the immediate version is used on blur and before
+  // leaving a question, where "in three seconds" is too late.
+  const scheduleSave = () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => void saveDraft(), 3000);
+  };
+
+  const saveNow = async () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    await saveDraft();
+  };
+  saveNowRef.current = saveNow;
+
+  // Restore whatever was typed here before, and take the server's word for the
+  // question and the clock. On a reload this is what puts the work back.
+  const loadCurrent = async (pos: number) => {
+    if (!sessionId || !sessionToken) return;
+    try {
+      const q = await sessionsApi.getQuestion(sessionId, pos, sessionToken);
+      setPosition(q.position);
+      setQuestion(q.question);
+      if (q.draft && (q.draft.text || q.draft.snippet_code)) {
+        setDraft(q.draft.text);
+        if (q.draft.snippet_code) {
+          setSketch(q.draft.snippet_code);
+          setSketchLang(q.draft.snippet_language ?? SNIPPET_DEFAULT_LANGUAGE);
+          setSketchOpen(true);
+        }
+        setSaveState('restored');
+      }
+    } catch (err) {
+      handleSessionClosedRef.current?.(err);
+    }
+  };
+
+  // On mount only: the store may have been rehydrated from sessionStorage
+  // after a reload, in which case the boxes are empty and the server knows
+  // what was in them.
+  useEffect(() => {
+    void loadCurrent(positionRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, sessionToken]);
+
+  // A last save when the tab goes away — the most common way work is lost is
+  // closing the laptop, not pressing anything.
+  useEffect(() => {
+    const onHide = () => {
+      if (document.hidden) void saveNow();
+    };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', onHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', onHide);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, sessionToken]);
 
   // Proctoring listeners + periodic flush + idle detection.
   useEffect(() => {
@@ -141,6 +251,10 @@ export default function CandidateAssessmentPage() {
         setTimeUp('submitting');
         void (async () => {
           await flushEvents();
+          // The last thing typed, saved before the session closes. The server
+          // promotes it to an answer; the grace window exists so this write
+          // still lands after a clock that has just hit zero.
+          await saveNowRef.current?.().catch(() => {});
           if (sessionId && sessionToken) await sessionsApi.submit(sessionId, sessionToken).catch(() => {});
           setTimeUp('done');
           // Let the message land before leaving the page.
@@ -179,11 +293,13 @@ export default function CandidateAssessmentPage() {
           <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-amber-600">
             <TimerOff size={22} />
           </span>
-          <h2 className="text-lg font-bold text-slate-800">Time's up</h2>
+          <h2 className="text-lg font-bold text-slate-800">
+            {preview ? 'Time\u2019s up (preview)' : "Time's up"}
+          </h2>
           <p className="mt-2 text-sm text-slate-600 leading-relaxed">
             {timeUp === 'submitting'
-              ? 'Your time limit has been reached. Submitting your assessment now…'
-              : 'Your assessment has been submitted. Any questions you did not reach are marked as unanswered.'}
+              ? 'Your time limit has been reached. Saving what you had written and submitting now…'
+              : 'Your assessment has been submitted, including the answer you were working on. Any questions you did not reach are marked as unanswered.'}
           </p>
           <div className="mt-5 flex justify-center">
             {timeUp === 'submitting' ? (
@@ -220,6 +336,8 @@ export default function CandidateAssessmentPage() {
     return false;
   };
 
+  handleSessionClosedRef.current = handleSessionClosed;
+
   // Move to the next question, or finish. Extracted because the probe screen
   // resumes the assessment at exactly the same point the answer would have.
   const advance = async (next: number | null) => {
@@ -236,6 +354,7 @@ export default function CandidateAssessmentPage() {
     setSketch('');
     setSketchLang(SNIPPET_DEFAULT_LANGUAGE);
     setConfidence(null);
+    setSaveState('idle');
     shownAt.current = Date.now();
     lastActivity.current = Date.now();
   };
@@ -256,6 +375,9 @@ export default function CandidateAssessmentPage() {
     // Before the answer, so the paste events for this question are on the
     // server by the time it decides whether a follow-up is due.
     await flushEvents();
+    // And a last draft write: if this submit is the one that loses the race
+    // with the clock, the draft is what gets promoted.
+    if (saveTimer.current) clearTimeout(saveTimer.current);
     try {
       const res = await sessionsApi.submitAnswer(
         sessionId,
@@ -340,6 +462,11 @@ export default function CandidateAssessmentPage() {
     const probeLow = probeRemainingMs <= 15_000;
     return (
       <div className="flex-1 flex flex-col">
+        {preview && (
+          <div className="flex justify-center px-6 pt-4">
+            <PreviewBanner />
+          </div>
+        )}
         <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
           <div className="mx-auto w-full max-w-2xl px-6 py-3">
             <div className="flex items-center justify-between gap-4">
@@ -427,6 +554,11 @@ export default function CandidateAssessmentPage() {
 
   return (
     <div className="flex-1 flex flex-col">
+      {preview && (
+        <div className="flex justify-center px-6 pt-4">
+          <PreviewBanner />
+        </div>
+      )}
       {/* Top bar */}
       <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto w-full max-w-2xl px-6 py-3">
@@ -470,7 +602,9 @@ export default function CandidateAssessmentPage() {
             onChange={(e) => {
               setDraft(e.target.value);
               lastActivity.current = Date.now();
+              scheduleSave();
             }}
+            onBlur={() => void saveNow()}
             onPaste={(e) => {
               const text = e.clipboardData.getData('text');
               if (text) pushEvent('paste', { char_count: text.length });
@@ -493,8 +627,14 @@ export default function CandidateAssessmentPage() {
               setSketch('');
               setSketchLang(SNIPPET_DEFAULT_LANGUAGE);
             }}
-            onCodeChange={setSketch}
-            onLanguageChange={setSketchLang}
+            onCodeChange={(code) => {
+              setSketch(code);
+              scheduleSave();
+            }}
+            onLanguageChange={(lang) => {
+              setSketchLang(lang);
+              scheduleSave();
+            }}
             // The same event type, on the same question index, as the answer
             // box — so a paste into the sketch counts for the report and for
             // the flagged_only probe rule exactly as a paste into the prose does.
@@ -538,6 +678,25 @@ export default function CandidateAssessmentPage() {
           {error && (
             <p className="text-sm text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
               {error}
+            </p>
+          )}
+
+          {/* Quiet by design. "Saved" is reassurance nobody asked for, so it
+              stays a single grey line; "restored" and "unsaved" are the two
+              states worth reading. */}
+          {saveState !== 'idle' && (
+            <p
+              className={cn(
+                'flex items-center gap-1.5 text-xs',
+                saveState === 'unsaved' ? 'text-amber-600' : 'text-slate-400',
+              )}
+            >
+              {saveState === 'restored' && <><RotateCcw size={12} /> Draft restored — we saved what you had typed.</>}
+              {saveState === 'saving' && 'Saving…'}
+              {saveState === 'saved' && <><Check size={12} /> Saved</>}
+              {saveState === 'unsaved' && (
+                <><CloudOff size={12} /> Unsaved changes — we'll keep trying as you type.</>
+              )}
             </p>
           )}
 

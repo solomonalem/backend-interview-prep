@@ -31,6 +31,17 @@ export const PROBES_MODES: ProbesMode[] = ['off', 'flagged_only', 'all'];
  *  the feature keep behaving exactly as they did. */
 export const DEFAULT_PROBES_MODE: ProbesMode = 'flagged_only';
 
+// ── Link expiry ──────────────────────────────────────────────────────────────
+// How long an invitation stays open. The options are deliberately few: this is
+// a decision a manager makes in passing while sending a link, not a setting.
+export const LINK_EXPIRY_DAY_OPTIONS = [3, 7, 14] as const;
+/** What a link gets when nobody says otherwise. */
+export const DEFAULT_LINK_EXPIRY_DAYS = 7;
+
+// ── Reminders ────────────────────────────────────────────────────────────────
+/** Days of silence before an automatic nudge, when a manager turns them on. */
+export const DEFAULT_AUTO_REMINDER_DAYS = 3;
+
 export const DEFAULT_PROBE_SECONDS = 90;
 export const MIN_PROBE_SECONDS = 60;
 export const MAX_PROBE_SECONDS = 180;
@@ -43,6 +54,12 @@ export interface CreateAssessmentRequest {
   timer_seconds?: number;
   proctoring_config?: ProctoringConfig;
   confidence_rating_enabled: boolean;
+  /**
+   * Remind candidates who haven't started after this many days. Omitted or
+   * null leaves it off — an assessment that emails people by itself is a
+   * decision, not a default.
+   */
+  auto_reminder_days?: number | null;
   /** Omitted → DEFAULT_PROBES_MODE, not the column default. */
   probes_mode?: ProbesMode;
   /** Omitted → DEFAULT_PROBE_SECONDS. Clamped to MIN/MAX at the API. */
@@ -68,6 +85,8 @@ export interface AssessmentLinkSummary {
   candidate_email: string | null;
   /** The manager's record this link is filed under, when it has one. */
   candidate_id: string | null;
+  /** null means the link never expires. */
+  expires_at: string | null;
   status: LinkStatus;
   overall_score: number | null;
 }
@@ -105,7 +124,10 @@ export interface AssessmentDetailLink {
   candidate_email: string | null;
   /** The manager's record this link is filed under, when it has one. */
   candidate_id: string | null;
-  expires_at: string;
+  /** null means the link never expires. */
+  expires_at: string | null;
+  /** When a reminder was last sent by hand. null if never. */
+  reminder_sent_at: string | null;
   status: LinkStatus;
   session?: {
     id: string;
@@ -132,7 +154,11 @@ export interface CreateLinkRequest {
   candidate_label?: string;
   /** When set, the link is emailed here and duplicate detection keys on it. */
   candidate_email?: string;
-  expires_in_hours?: number;
+  /**
+   * How many days the link stays open. Omitted → DEFAULT_LINK_EXPIRY_DAYS;
+   * explicit null → no expiry.
+   */
+  expires_in_days?: number | null;
   /**
    * Set true to create the link anyway after a DUPLICATE_CANDIDATE 409. The
    * check is deliberately not a separate endpoint — a pre-check could go stale
@@ -153,16 +179,33 @@ export interface DuplicateCandidate {
 }
 
 // ── PATCH /assessments/:id/links/:linkId ─────────────────────────────────────
-/** null clears the label back to the unlabelled fallback. */
 export interface UpdateLinkRequest {
-  candidate_label: string | null;
+  /** null clears the label back to the unlabelled fallback. */
+  candidate_label?: string | null;
+  /**
+   * Re-open an expired link, or change when it closes. Counted from NOW, not
+   * from when the link was made — extending something that lapsed yesterday by
+   * "3 days" means three days from today, which is what the manager meant.
+   * Explicit null removes the expiry entirely.
+   */
+  expires_in_days?: number | null;
+}
+
+// ── POST /assessments/:id/links/:linkId/reminder ─────────────────────────────
+/** A nudge to a candidate who hasn't started. Delivery is never assumed. */
+export interface SendReminderResponse {
+  status: InviteEmailStatus;
+  error?: string;
+  /** When this one went out (or was attempted). */
+  reminder_sent_at: string;
 }
 
 export interface CreateLinkResponse {
   id: string;
   token: string;
   url: string;
-  expires_at: string;
+  /** null means the link never expires. */
+  expires_at: string | null;
   /** Echoes what the link was actually named — may be a generated default. */
   candidate_label: string | null;
   candidate_email: string | null;

@@ -380,6 +380,17 @@ export function ReportBody({
             <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-500" />
             <p className="max-w-[95ch] text-sm text-slate-600 leading-relaxed">{proctoring.context_note}</p>
           </div>
+          {/* Stated because it happened, framed because of what it is: an
+              autosave that was already in flight when the clock hit zero. Not
+              a flag, and deliberately not counted among the chips above, which
+              are the things worth a second look. */}
+          {proctoring.late_write_count > 0 && (
+            <p className="mt-3 text-xs text-slate-400">
+              {proctoring.late_write_count === 1
+                ? 'One autosave arrived in the few seconds after the timer ended and was accepted — normal mechanics, noted for completeness.'
+                : `${proctoring.late_write_count} autosaves arrived in the few seconds after the timer ended and were accepted — normal mechanics, noted for completeness.`}
+            </p>
+          )}
         </CardBody>
       </Card>
 
@@ -471,11 +482,23 @@ export function ReportBody({
                       {/* On the question rather than only in the session totals:
                           a paste count at the top of the report tells you it
                           happened, not where. */}
-                      {q.answer.paste_detected && (
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
-                          <ClipboardPaste size={11} /> Pasted into this answer
-                        </span>
-                      )}
+                      <span className="flex items-center gap-2">
+                        {/* The candidate never pressed submit on this one — the
+                            clock did. Said plainly, because reading an answer
+                            as a considered submission when it was a draft
+                            caught mid-sentence is a misreading with
+                            consequences for someone. */}
+                        {q.answer.source === 'draft_at_expiry' && (
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 px-2.5 py-0.5 text-[11px] font-semibold text-sky-700 ring-1 ring-sky-200">
+                            <Clock size={11} /> Auto-submitted from draft at time-up
+                          </span>
+                        )}
+                        {q.answer.paste_detected && (
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
+                            <ClipboardPaste size={11} /> Pasted into this answer
+                          </span>
+                        )}
+                      </span>
                     </div>
                     <p className="max-w-[95ch] text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
                       {q.answer.text || <span className="italic text-slate-400">No answer provided</span>}

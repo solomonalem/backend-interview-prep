@@ -78,6 +78,7 @@ model Question {
 
   assessment_questions  AssessmentQuestion[]
   answers               Answer[]
+  answer_drafts         AnswerDraft[]
 
   @@index([topic])
   @@index([difficulty])
@@ -139,6 +140,11 @@ model Assessment {
   // NEW assessment to `flagged_only` instead. The two defaults are deliberately
   // different — one is about not changing the past, the other about what a
   // manager should get when they don't express a preference.
+  // Days of silence before the system nudges a candidate who never started.
+  // NULL is off, and off is the default: an assessment that emails people on
+  // its own is a decision a manager makes, not one they inherit.
+  auto_reminder_days Int?
+
   probes_mode        ProbesMode @default(off)
   // Seconds a candidate gets to defend one answer. 60-180, validated at the
   // API; a defense is meant to be a reflex, not a second essay.
@@ -223,7 +229,20 @@ model AssessmentLink {
   // exactly as every link did before records existed.
   candidate_id    String?
   candidate       Candidate?  @relation(fields: [candidate_id], references: [id], onDelete: SetNull)
-  expires_at      DateTime
+
+  // NULL means no expiry. Nullable as of this wave: the column has always
+  // existed and always been enforced, but a manager had no way to say "this
+  // one should stay open", and 7 days of silence is not consent to a closed
+  // door. An expiry only gates STARTING — a session already in progress is
+  // governed by its own timer and is never cut off by this.
+  expires_at      DateTime?
+
+  // Manual nudges. Both are stamps rather than counters: what matters is
+  // whether we have already written to this person, and when.
+  reminder_sent_at      DateTime?
+  // The automatic sweep writes here and checks it first, which is the whole of
+  // the no-spam rule: at most one automatic reminder per link, ever.
+  auto_reminder_sent_at DateTime?
   opened_at       DateTime?   // set when candidate first clicks link
   session_id      String?     @unique  // set when session is created from this link
 
@@ -245,6 +264,14 @@ model Session {
 
   candidate_label String?         // carried from AssessmentLink
 
+  // A manager walking their own assessment to see what they are sending.
+  //
+  // Preview sessions are real sessions — the same questions, timer, proctoring
+  // and follow-ups, because a preview that behaves differently is not a
+  // preview. What they never become is DATA: no scoring, no report, no
+  // candidate record, nothing in a dashboard. They are deleted after a day.
+  is_preview      Boolean         @default(false)
+
   status          SessionStatus   @default(not_started)
   started_at      DateTime?
   submitted_at    DateTime?       // null until submitted
@@ -259,6 +286,7 @@ model Session {
   link            AssessmentLink?
   shares          ReportShare[]
   answers         Answer[]
+  drafts          AnswerDraft[]
   behavior_events BehaviorEvent[]
   report          Report?
 
@@ -303,6 +331,8 @@ model Answer {
   paste_detected  Boolean   @default(false)
   paste_char_count Int?     // largest paste char count during this question
 
+  source          AnswerSource  @default(submitted)
+
   scoring_status  ScoringStatus @default(pending)
   submitted_at    DateTime  @default(now())
 
@@ -312,6 +342,50 @@ model Answer {
   @@unique([session_id, question_id])
   @@index([session_id])
   @@map("answers")
+}
+
+// How an answer came to exist.
+//
+// `submitted` is a candidate pressing the button. `draft_at_expiry` is their
+// last autosaved draft, promoted when the clock ran out before they submitted
+// — the same words they typed, arriving the only way they still could. The
+// report says which, because a reader is entitled to know whether the
+// candidate chose to hand that in.
+enum AnswerSource {
+  submitted
+  draft_at_expiry
+}
+
+// Work in progress on one question.
+//
+// A SEPARATE TABLE, not columns on Answer, and the reason is blast radius. An
+// Answer row is load-bearing: its existence is how the session counts progress,
+// how scoring finds work, and what the report walks. A draft that lived there
+// would have to be filtered out of every one of those paths, and the first
+// place we missed would put a phantom answer in a hiring report. Here, a draft
+// is structurally incapable of being mistaken for an answer — nothing that
+// reads answers can see this table.
+//
+// One row per question per session, overwritten in place: only the latest
+// draft is worth anything.
+model AnswerDraft {
+  id          String   @id @default(cuid())
+  session_id  String
+  session     Session  @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  question_id String
+  question    Question @relation(fields: [question_id], references: [id])
+  position    Int
+
+  text             String  @default("")
+  snippet_code     String?
+  snippet_language String?
+
+  saved_at    DateTime @updatedAt
+  created_at  DateTime @default(now())
+
+  @@unique([session_id, question_id])
+  @@index([session_id])
+  @@map("answer_drafts")
 }
 
 enum ScoringStatus {
@@ -462,6 +536,11 @@ enum BehaviorEventType {
   focus_loss
   paste
   idle
+  // A write the server accepted inside the expiry grace window. Recorded for
+  // honesty rather than suspicion: it is expected mechanics (an autosave in
+  // flight when the clock ran out), and the report presents it as context, not
+  // as a flag.
+  late_write
 }
 
 // ─── REPORTS ─────────────────────────────────────────────────────────────────

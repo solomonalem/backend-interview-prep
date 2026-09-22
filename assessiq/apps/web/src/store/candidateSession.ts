@@ -2,7 +2,12 @@ import { create } from 'zustand';
 import type { CandidateQuestion } from '@assessiq/types';
 
 // Holds the active candidate session across landing → session → submitted.
-// In-memory only (lost on refresh — the candidate would re-open the link).
+//
+// Persisted to sessionStorage, not just memory. A reload used to lose the
+// session token and bounce the candidate back to the landing page, which made
+// autosaved drafts pointless — work you cannot return to is not saved work.
+// sessionStorage is the right scope: it survives a reload and dies with the
+// tab, and the server can always resume the session from the link anyway.
 interface CandidateSessionState {
   linkToken: string | null;
   sessionId: string | null;
@@ -13,6 +18,8 @@ interface CandidateSessionState {
   /** Whether follow-ups can appear. Only used to explain the wait after a
    *  submit — never to predict whether one will fire. */
   probesEnabled: boolean;
+  /** A manager walking their own assessment. Nothing here is recorded. */
+  preview: boolean;
   firstQuestion: { position: number; question: CandidateQuestion } | null;
   start: (data: {
     linkToken: string;
@@ -22,12 +29,17 @@ interface CandidateSessionState {
     total: number;
     confidenceEnabled: boolean;
     probesEnabled: boolean;
+    preview?: boolean;
     firstQuestion: { position: number; question: CandidateQuestion };
   }) => void;
   clear: () => void;
 }
 
-export const useCandidateSession = create<CandidateSessionState>((set) => ({
+const STORAGE_KEY = 'assessiq_candidate_session';
+
+type Persisted = Omit<CandidateSessionState, 'start' | 'clear'>;
+
+const EMPTY: Persisted = {
   linkToken: null,
   sessionId: null,
   sessionToken: null,
@@ -35,17 +47,44 @@ export const useCandidateSession = create<CandidateSessionState>((set) => ({
   total: 0,
   confidenceEnabled: true,
   probesEnabled: false,
+  preview: false,
   firstQuestion: null,
-  start: (data) => set({ ...data }),
+};
+
+// Never throws: a browser with storage disabled gets the in-memory behaviour
+// the store had before, which still works for anyone who doesn't reload.
+function load(): Persisted {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    return raw ? { ...EMPTY, ...(JSON.parse(raw) as Partial<Persisted>) } : EMPTY;
+  } catch {
+    return EMPTY;
+  }
+}
+
+function save(state: Persisted): void {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    /* storage unavailable — the session still works until a reload */
+  }
+}
+
+export const useCandidateSession = create<CandidateSessionState>((set) => ({
+  ...load(),
+  start: (data) =>
+    set(() => {
+      const next = { ...EMPTY, ...data, preview: data.preview ?? false };
+      save(next);
+      return next;
+    }),
   clear: () =>
-    set({
-      linkToken: null,
-      sessionId: null,
-      sessionToken: null,
-      expiresAt: null,
-      total: 0,
-      confidenceEnabled: true,
-      probesEnabled: false,
-      firstQuestion: null,
+    set(() => {
+      try {
+        sessionStorage.removeItem(STORAGE_KEY);
+      } catch {
+        /* nothing to clean up */
+      }
+      return { ...EMPTY };
     }),
 }));

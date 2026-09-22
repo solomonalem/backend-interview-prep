@@ -15,10 +15,14 @@ import {
   MailCheck,
   MailX,
   AlertTriangle,
+  BellRing,
+  CalendarPlus,
+  Eye,
 } from 'lucide-react';
 import type {
   CreateLinkResponse,
   DuplicateCandidate, AssessmentDetail, LinkStatus } from '@assessiq/types';
+import { DEFAULT_LINK_EXPIRY_DAYS, LINK_EXPIRY_DAY_OPTIONS } from '@assessiq/types';
 import {
   Avatar,
   Badge,
@@ -92,6 +96,28 @@ function InviteOutcome({ result }: { result: CreateLinkResponse }) {
   );
 }
 
+/**
+ * "Expires in 3 days" / "Expired" / nothing at all.
+ *
+ * A link with no expiry says nothing rather than "never expires": the absence
+ * of a deadline is the quiet case, and announcing it would give it weight it
+ * does not have.
+ */
+function ExpiryLine({ expiresAt }: { expiresAt: string | null }) {
+  if (!expiresAt) return null;
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) {
+    return <p className="text-xs font-medium text-rose-600">Expired</p>;
+  }
+  const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
+  const soon = days <= 1;
+  return (
+    <p className={cn('text-xs', soon ? 'font-medium text-amber-600' : 'text-slate-400')}>
+      {days === 1 ? 'Expires within a day' : `Expires in ${days} days`}
+    </p>
+  );
+}
+
 export default function AssessmentDetailPage() {
   const { id } = useParams();
   const [detail, setDetail] = useState<AssessmentDetail | null>(null);
@@ -109,6 +135,10 @@ export default function AssessmentDetailPage() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [renaming, setRenaming] = useState(false);
+  const [expiryDays, setExpiryDays] = useState<number | null>(DEFAULT_LINK_EXPIRY_DAYS);
+  // Per-link busy flags, so one row's reminder doesn't grey out the others.
+  const [remindingId, setRemindingId] = useState<string | null>(null);
+  const [reminderNote, setReminderNote] = useState<{ id: string; text: string } | null>(null);
   const [generating, setGenerating] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
 
@@ -135,7 +165,9 @@ export default function AssessmentDetailPage() {
     setRenaming(true);
     try {
       // Empty clears the label, falling back to the generated handle.
-      await assessmentsApi.updateLink(id, linkId, renameDraft.trim() || null);
+      await assessmentsApi.updateLink(id, linkId, {
+        candidate_label: renameDraft.trim() || null,
+      });
       setRenamingId(null);
       await load();
     } catch (err) {
@@ -154,6 +186,9 @@ export default function AssessmentDetailPage() {
       const res = await assessmentsApi.createLink(id, {
         ...(label.trim() ? { candidate_label: label.trim() } : {}),
         ...(email.trim() ? { candidate_email: email.trim() } : {}),
+        // Always sent, including the explicit null for "no expiry" — omitting
+        // it would mean "didn't say", which is a different thing.
+        expires_in_days: expiryDays,
         ...(confirmDuplicate ? { confirm_duplicate: true } : {}),
       });
       setLabel('');
@@ -170,6 +205,41 @@ export default function AssessmentDetailPage() {
       }
     } finally {
       setGenerating(false);
+    }
+  };
+
+  // Re-open a link that ran out, counted from today.
+  const extend = async (linkId: string, days: number) => {
+    if (!id) return;
+    try {
+      await assessmentsApi.updateLink(id, linkId, { expires_in_days: days });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not extend this link');
+    }
+  };
+
+  const remind = async (linkId: string) => {
+    if (!id || remindingId) return;
+    setRemindingId(linkId);
+    setError(null);
+    try {
+      const res = await assessmentsApi.sendReminder(id, linkId);
+      // Delivery is reported, never assumed — the same rule the invite follows.
+      setReminderNote({
+        id: linkId,
+        text:
+          res.status === 'sent'
+            ? 'Reminder sent.'
+            : res.status === 'failed'
+              ? `Reminder didn't go out: ${res.error ?? 'the provider rejected it'}.`
+              : 'Email is not configured here, so nothing was sent.',
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not send a reminder');
+    } finally {
+      setRemindingId(null);
     }
   };
 
@@ -210,9 +280,19 @@ export default function AssessmentDetailPage() {
         title={detail.title}
         subtitle={`${detail.questions.length} questions · ${timerLabel}`}
         actions={
-          <Link to="/dashboard">
-            <Button variant="secondary">Back to dashboard</Button>
-          </Link>
+          <div className="flex gap-2">
+            {/* Before sending it to anyone: the only way to find out that a
+                20-minute timer is brutal without a candidate finding out
+                first. */}
+            <Link to={`/preview/${detail.id}`}>
+              <Button variant="secondary">
+                <Eye size={15} /> Preview as candidate
+              </Button>
+            </Link>
+            <Link to="/dashboard">
+              <Button variant="secondary">Back to dashboard</Button>
+            </Link>
+          </div>
         }
       />
 
@@ -261,8 +341,26 @@ export default function AssessmentDetailPage() {
               {generating ? 'Creating…' : email.trim() ? 'Send invite' : 'Create link'}
             </Button>
           </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-slate-500">Link valid for</span>
+            {[...LINK_EXPIRY_DAY_OPTIONS, null].map((d) => (
+              <button
+                key={d ?? 'never'}
+                type="button"
+                onClick={() => setExpiryDays(d)}
+                className={cn(
+                  'rounded-lg border px-2.5 py-1 text-xs font-medium transition',
+                  expiryDays === d
+                    ? 'border-brand-400 bg-brand-50 text-brand-700'
+                    : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700',
+                )}
+              >
+                {d === null ? 'No expiry' : `${d} days`}
+              </button>
+            ))}
+          </div>
           <p className="text-xs text-slate-500">
-            Both optional — leave them blank for a quick link you copy yourself.
+            Name and email are optional — leave them blank for a quick link you copy yourself.
           </p>
 
           {/* Duplicate warning — a question, not an error. */}
@@ -380,6 +478,12 @@ export default function AssessmentDetailPage() {
                         /a/{l.token}
                       </code>
                     )}
+                    {/* Only worth saying while it still matters: a link that
+                        has been used has nothing left to expire. */}
+                    {!l.session && <ExpiryLine expiresAt={l.expires_at} />}
+                    {reminderNote?.id === l.id && (
+                      <p className="text-xs text-slate-500">{reminderNote.text}</p>
+                    )}
                   </div>
                   <span className={`text-[11px] font-medium px-2 py-0.5 rounded-md ${meta.tone}`}>
                     {meta.label}
@@ -393,6 +497,30 @@ export default function AssessmentDetailPage() {
                       <span className="text-xs text-slate-300">—</span>
                     )}
                   </div>
+                  {/* Only for someone who hasn't started and can be written
+                      to — everything else would be a button that explains why
+                      it doesn't work. */}
+                  {!l.session && l.candidate_email && l.status !== 'expired' && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void remind(l.id)}
+                      disabled={remindingId === l.id}
+                      title={
+                        l.reminder_sent_at
+                          ? `Last reminded ${new Date(l.reminder_sent_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`
+                          : 'Send a reminder'
+                      }
+                    >
+                      {remindingId === l.id ? <Spinner className="h-3.5 w-3.5" /> : <BellRing size={14} />}
+                      {l.reminder_sent_at ? 'Remind again' : 'Remind'}
+                    </Button>
+                  )}
+                  {l.status === 'expired' && !l.session && (
+                    <Button size="sm" variant="ghost" onClick={() => void extend(l.id, DEFAULT_LINK_EXPIRY_DAYS)}>
+                      <CalendarPlus size={14} /> Extend
+                    </Button>
+                  )}
                   <Button size="sm" variant="secondary" onClick={() => copy(l.token)}>
                     {copiedToken === l.token ? (
                       <>

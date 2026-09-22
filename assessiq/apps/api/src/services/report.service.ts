@@ -322,6 +322,7 @@ async function buildReport(
             char_count: e.char_count ?? 0,
           })),
         idle_count: session.report.idle_count,
+        late_write_count: session.behavior_events.filter((e) => e.type === 'late_write').length,
         context_note: session.report.proctoring_context,
       },
       // Walk the assessment's questions, not the answers, so unanswered ones
@@ -379,6 +380,7 @@ async function buildReport(
                 snippet_language: isSnippetLanguage(a.snippet_language)
                   ? a.snippet_language
                   : null,
+                source: a.source,
               }
             : null,
           score,

@@ -53,6 +53,35 @@ export default function App() {
               app shell: no nav, no sidebar, no way into the account behind it. */}
           <Route path="/r/:token" element={<SharedReportPage />} />
 
+          {/* Preview as candidate — the SAME components the candidate flow
+              uses, behind the manager's login. Reusing them is the point: a
+              preview made of lookalike screens stops being evidence of what
+              the candidate will see the moment the two drift. */}
+          <Route
+            path="/preview/:assessmentId"
+            element={
+              <ProtectedRoute>
+                <CandidateLayout><LinkLandingPage preview /></CandidateLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/preview/:assessmentId/session"
+            element={
+              <ProtectedRoute>
+                <CandidateLayout><CandidateAssessmentPage preview /></CandidateLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/preview/:assessmentId/done"
+            element={
+              <ProtectedRoute>
+                <CandidateLayout><SubmittedPage preview /></CandidateLayout>
+              </ProtectedRoute>
+            }
+          />
+
           {/* Candidate flow (public, minimal chrome) */}
           <Route path="/a/:token" element={<CandidateLayout><LinkLandingPage /></CandidateLayout>} />
           <Route path="/a/:token/session" element={<CandidateLayout><CandidateAssessmentPage /></CandidateLayout>} />

@@ -26,6 +26,13 @@ export interface LinkValidateResponse {
     /** The countdown a follow-up carries, in seconds. Disclosed up front. */
     probe_time_seconds: number;
   };
+  /**
+   * True when this link already has an UNFINISHED session on it: the candidate
+   * is coming back, not starting. Starting resumes where they left off, with
+   * their drafts, and the timer still where it was — it has been running all
+   * along.
+   */
+  resumable: boolean;
 }
 
 export interface StartSessionRequest {
@@ -39,11 +46,42 @@ export interface StartSessionResponse {
   first_question: { position: number; question: CandidateQuestion };
 }
 
+/** Work in progress on this question, restored when the page comes back. */
+export interface AnswerDraftView {
+  text: string;
+  snippet_code: string | null;
+  snippet_language: SnippetLanguage | null;
+  saved_at: string;
+}
+
 export interface QuestionViewResponse {
   position: number;
   total: number;
   question: CandidateQuestion;
   time_remaining_ms: number | null;
+  /** null when nothing has been typed here yet. */
+  draft: AnswerDraftView | null;
+}
+
+/**
+ * An autosave. Same shape as the answer it will become, minus everything about
+ * submitting — a draft has no confidence rating and no elapsed time, because
+ * neither means anything until the candidate decides they are done.
+ */
+export interface SaveDraftRequest {
+  text: string;
+  snippet_code?: string;
+  snippet_language?: SnippetLanguage;
+}
+
+export interface SaveDraftResponse {
+  saved_at: string;
+  /**
+   * How far past the deadline this write landed, when it was inside the grace
+   * window. null in the normal case. The client shows nothing for it — it
+   * exists so the server's answer is honest about what it accepted.
+   */
+  late_by_ms: number | null;
 }
 
 export interface SubmitAnswerRequest {

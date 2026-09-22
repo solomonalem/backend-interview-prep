@@ -188,7 +188,7 @@ export async function getCandidate(ownerId: string, id: string): Promise<Candida
     assessment_id: l.assessment.id,
     assessment_title: l.assessment.title,
     sent_at: l.created_at.toISOString(),
-    expires_at: l.expires_at.toISOString(),
+    expires_at: l.expires_at?.toISOString() ?? null,
     status: deriveLinkStatus(l),
     url: `${base}/a/${l.token}`,
     session_id: l.session?.id ?? null,

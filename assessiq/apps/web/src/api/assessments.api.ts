@@ -1,5 +1,9 @@
 import type {
   AssessmentDetail,
+  LinkValidateResponse,
+  StartSessionResponse,
+  SendReminderResponse,
+  UpdateLinkRequest,
   AssessmentDetailLink,
   AssessmentListResponse,
   CreateAssessmentRequest,
@@ -16,7 +20,18 @@ export const assessmentsApi = {
   get: (id: string) => api.get<AssessmentDetail>(`/assessments/${id}`),
   createLink: (id: string, body: CreateLinkRequest = {}) =>
     api.post<CreateLinkResponse>(`/assessments/${id}/links`, body),
-  // null clears the label back to the generated fallback.
-  updateLink: (id: string, linkId: string, candidate_label: string | null) =>
-    api.patch<AssessmentDetailLink>(`/assessments/${id}/links/${linkId}`, { candidate_label }),
+  // Rename, re-open, or remove the expiry. Every field optional — the caller
+  // sends what it means to change and nothing else.
+  updateLink: (id: string, linkId: string, body: UpdateLinkRequest) =>
+    api.patch<AssessmentDetailLink>(`/assessments/${id}/links/${linkId}`, body),
+  sendReminder: (id: string, linkId: string) =>
+    api.post<SendReminderResponse>(`/assessments/${id}/links/${linkId}/reminder`),
+
+  // ── Preview as candidate ───────────────────────────────────────────────────
+  // The same two calls the candidate flow makes, against the manager's own
+  // assessment, so the preview can reuse the candidate pages unchanged.
+  previewMeta: (id: string) =>
+    api.get<{ assessment: LinkValidateResponse['assessment'] }>(`/assessments/${id}/preview`),
+  startPreview: (id: string) =>
+    api.post<StartSessionResponse>(`/assessments/${id}/preview`),
 };

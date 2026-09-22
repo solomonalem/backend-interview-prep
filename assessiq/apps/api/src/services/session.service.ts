@@ -1,6 +1,8 @@
 import { BehaviorEventType as DbBehaviorEventType } from '@prisma/client';
 import type {
   BehaviorEventInput,
+  SaveDraftRequest,
+  SaveDraftResponse,
   LinkValidateResponse,
   ProctoringConfig,
   QuestionViewResponse,
@@ -14,6 +16,7 @@ import { prisma } from '../lib/prisma.js';
 import { signCandidateToken } from '../lib/jwt.js';
 import { AppError } from '../middleware/error.middleware.js';
 import { scoringQueue } from '../queues/scoring.queue.js';
+import { isSnippetLanguage } from '@assessiq/types';
 import { answerWithSnippet, normalizeSnippet } from '../utils/snippet.js';
 import {
   createProbeForAnswer,
@@ -22,6 +25,11 @@ import {
   probeIsDue,
   submitProbeAnswer,
 } from './probe.service.js';
+
+/** null means no expiry: the link stays open until it is used. */
+function linkHasExpired(expiresAt: Date | null): boolean {
+  return expiresAt !== null && expiresAt.getTime() < Date.now();
+}
 
 function proctoringEnabled(config: unknown): boolean {
   const pc = config as ProctoringConfig | null;
@@ -35,6 +43,7 @@ export async function validateLink(token: string): Promise<LinkValidateResponse>
   const link = await prisma.assessmentLink.findUnique({
     where: { token },
     include: {
+      session: { select: { status: true } },
       assessment: {
         include: {
           owner: { select: { company: true } },
@@ -45,10 +54,22 @@ export async function validateLink(token: string): Promise<LinkValidateResponse>
   });
 
   if (!link) throw new AppError(404, 'LINK_INVALID', 'Link not found or expired');
-  if (link.expires_at.getTime() < Date.now()) {
-    throw new AppError(410, 'LINK_INVALID', 'Link not found or expired');
+  // A distinct code from "we have never heard of this link": an expired link
+  // is a real invitation that ran out, and the candidate should be told that
+  // rather than left wondering whether they mistyped something.
+  if (linkHasExpired(link.expires_at)) {
+    throw new AppError(410, 'LINK_EXPIRED', 'This assessment link has expired');
   }
-  if (link.session_id) throw new AppError(409, 'LINK_USED', 'This link has already been used');
+
+  // An UNFINISHED session on this link is a candidate coming back, not a link
+  // being reused. Before drafts existed this was a 409 and a closed door: a
+  // reload, a crashed tab or a flat battery ended the assessment. Saving
+  // someone's work and then refusing to let them return to it would be a
+  // strange kind of robustness.
+  const resumable = Boolean(link.session && link.session.status === 'in_progress');
+  if (link.session_id && !resumable) {
+    throw new AppError(409, 'LINK_USED', 'This link has already been used');
+  }
 
   // First view marks the link opened (idempotent).
   if (!link.opened_at) {
@@ -70,6 +91,39 @@ export async function validateLink(token: string): Promise<LinkValidateResponse>
       probes_enabled: a.probes_mode !== 'off',
       probe_time_seconds: a.probe_time_seconds,
     },
+    resumable,
+  };
+}
+
+/**
+ * Pick an unfinished session back up.
+ *
+ * The session id and its answers are untouched; all that changes is a new
+ * short-lived token and a fresh look at where they had got to. If the timer
+ * elapsed while they were away, closing it here is exactly what should happen
+ * — including the scoring that closing now queues.
+ */
+async function resumeSession(sessionId: string): Promise<StartSessionResponse> {
+  const s = await loadSessionWithAssessment(sessionId);
+  const deadline = sessionDeadlineMs(s);
+  if (deadline !== null && Date.now() > deadline) {
+    await closeExpiredSession(s.id);
+    throw new AppError(410, 'SESSION_EXPIRED', 'Time is up — your assessment has been submitted');
+  }
+
+  const position = Math.min(s._count.answers, s.assessment.questions.length - 1);
+  const aq = s.assessment.questions[position];
+  if (!aq) throw new AppError(400, 'NO_QUESTIONS', 'Assessment has no questions');
+
+  const sessionToken = signCandidateToken(s.id);
+  await prisma.session.update({ where: { id: s.id }, data: { session_token: sessionToken } });
+
+  return {
+    session_id: s.id,
+    session_token: sessionToken,
+    expires_at:
+      deadline !== null ? new Date(deadline).toISOString() : null,
+    first_question: { position: aq.position, question: aq.question },
   };
 }
 
@@ -78,6 +132,7 @@ export async function startSession(linkToken: string): Promise<StartSessionRespo
   const link = await prisma.assessmentLink.findUnique({
     where: { token: linkToken },
     include: {
+      session: { select: { id: true, status: true } },
       assessment: {
         include: {
           questions: {
@@ -90,12 +145,25 @@ export async function startSession(linkToken: string): Promise<StartSessionRespo
   });
 
   if (!link) throw new AppError(404, 'LINK_INVALID', 'Link not found or expired');
-  if (link.expires_at.getTime() < Date.now()) {
-    throw new AppError(410, 'LINK_INVALID', 'Link not found or expired');
+  // Checked before the resume branch below on purpose: an expiry gates
+  // STARTING. Someone already in progress is governed by the session timer and
+  // is never cut off mid-assessment by this, which is why the resume path is
+  // reached only when the link itself is still open.
+  if (linkHasExpired(link.expires_at)) {
+    throw new AppError(410, 'LINK_EXPIRED', 'This assessment link has expired');
+  }
+
+  const a = link.assessment;
+
+  // Coming back to an unfinished session: hand them a fresh token and the
+  // question they were on. The timer is unchanged — it has been running the
+  // whole time, which is the point of anchoring it to started_at rather than
+  // to whether a tab happened to be open.
+  if (link.session && link.session.status === 'in_progress') {
+    return resumeSession(link.session.id);
   }
   if (link.session_id) throw new AppError(409, 'LINK_USED', 'This link has already been used');
 
-  const a = link.assessment;
   const first = a.questions[0];
   if (!first) throw new AppError(400, 'NO_QUESTIONS', 'Assessment has no questions');
 
@@ -161,21 +229,122 @@ function sessionDeadlineMs(s: LoadedSession): number | null {
   return null;
 }
 
-// Throws if the session is closed. Auto-submits (once) if the timer has elapsed.
-async function ensureActive(s: LoadedSession): Promise<void> {
+/**
+ * How long past the deadline the server still accepts a write.
+ *
+ * Ten seconds, and it buys exactly two things: the autosave that was in flight
+ * when the clock hit zero, and the difference between the candidate's clock and
+ * ours. It is NOT extra time — the visible timer still reaches zero when it
+ * reaches zero, the UI still closes, and nothing here lets anyone keep typing.
+ * What it prevents is losing the last three seconds of someone's answer to a
+ * race we created.
+ */
+export const EXPIRY_GRACE_SECONDS = 10;
+
+/**
+ * Close an expired session properly.
+ *
+ * Three things have to happen and, before this wave, only the first two did:
+ * the session is marked submitted, open probes are finalised, AND the answers
+ * are queued for scoring. Without the third a candidate whose tab died past the
+ * deadline got no report at all — the session sat submitted and unscored
+ * forever (follow-up #7).
+ *
+ * Drafts are promoted first, so what gets scored includes the answer they were
+ * in the middle of writing.
+ */
+async function closeExpiredSession(sessionId: string): Promise<void> {
+  await promoteDraftsToAnswers(sessionId);
+  await prisma.session.update({
+    where: { id: sessionId },
+    data: { status: 'submitted', submitted_at: new Date(), auto_submitted: true },
+  });
+  // A probe still on screen when the session clock ran out was not answered.
+  await finalizeOpenProbes(sessionId);
+
+  const s = await prisma.session.findUnique({
+    where: { id: sessionId },
+    select: { is_preview: true },
+  });
+  if (s?.is_preview) return;
+  await enqueueScoring(sessionId);
+}
+
+/**
+ * Turn whatever the candidate had typed into answers.
+ *
+ * Only drafts with no answer behind them and something actually written — an
+ * empty box is not an answer, and promoting it would put a 0% on the report for
+ * a question they never reached. The source is recorded so the report can say
+ * where this came from rather than implying they pressed submit.
+ */
+async function promoteDraftsToAnswers(sessionId: string): Promise<void> {
+  const drafts = await prisma.answerDraft.findMany({ where: { session_id: sessionId } });
+  if (drafts.length === 0) return;
+
+  const answered = new Set(
+    (
+      await prisma.answer.findMany({
+        where: { session_id: sessionId },
+        select: { question_id: true },
+      })
+    ).map((a) => a.question_id),
+  );
+
+  for (const draft of drafts) {
+    if (answered.has(draft.question_id)) continue;
+    const snippet = normalizeSnippet(draft.snippet_code, draft.snippet_language);
+    if (draft.text.trim().length === 0 && !snippet.code) continue;
+
+    await prisma.answer.create({
+      data: {
+        session_id: sessionId,
+        question_id: draft.question_id,
+        position: draft.position,
+        text: draft.text,
+        snippet_code: snippet.code,
+        snippet_language: snippet.language,
+        // The clock, not the candidate, ended this one.
+        source: 'draft_at_expiry',
+        // Unknowable from a draft: it was never "submitted" at a moment we can
+        // point to. Zero is the honest answer, and the report reads time from
+        // the session anyway.
+        time_spent_ms: 0,
+        scoring_status: 'pending',
+      },
+    });
+  }
+
+  await prisma.answerDraft.deleteMany({ where: { session_id: sessionId } });
+}
+
+/**
+ * Throws if the session is closed. Auto-submits (once) if the timer elapsed.
+ *
+ * `graceAllowed` is for writes that are allowed to land slightly late — a draft
+ * autosave, and the final answer riding on it. Everything else sees the
+ * deadline exactly where the candidate saw it.
+ *
+ * Returns how many milliseconds past the deadline the write was, or null when
+ * it was inside the timer. Callers record that as a `late_write` event.
+ */
+async function ensureActive(
+  s: LoadedSession,
+  opts: { graceAllowed?: boolean } = {},
+): Promise<number | null> {
   if (s.status === 'submitted' || s.status === 'expired') {
     throw new AppError(400, 'SESSION_CLOSED', 'This session has already been submitted');
   }
   const deadline = sessionDeadlineMs(s);
-  if (deadline !== null && Date.now() > deadline) {
-    await prisma.session.update({
-      where: { id: s.id },
-      data: { status: 'submitted', submitted_at: new Date(), auto_submitted: true },
-    });
-    // A probe still on screen when the session clock ran out was not answered.
-    await finalizeOpenProbes(s.id);
-    throw new AppError(400, 'SESSION_EXPIRED', 'Time is up — your assessment has been submitted');
-  }
+  if (deadline === null) return null;
+
+  const pastBy = Date.now() - deadline;
+  if (pastBy <= 0) return null;
+
+  if (opts.graceAllowed && pastBy <= EXPIRY_GRACE_SECONDS * 1000) return pastBy;
+
+  await closeExpiredSession(s.id);
+  throw new AppError(400, 'SESSION_EXPIRED', 'Time is up — your assessment has been submitted');
 }
 
 // ── GET /sessions/:id/question/:position ─────────────────────────────────────
@@ -201,13 +370,90 @@ export async function getQuestion(
   const aq = s.assessment.questions[position];
   if (!aq) throw new AppError(404, 'POSITION_INVALID', 'No question at that position');
 
+  // Whatever they had typed here before the page went away. This is the whole
+  // point of drafts: a reload, a crashed tab or a closed laptop lid returns to
+  // the words that were on screen.
+  const draft = await prisma.answerDraft.findUnique({
+    where: { session_id_question_id: { session_id: sessionId, question_id: aq.question.id } },
+  });
+
   const deadline = sessionDeadlineMs(s);
   return {
     position,
     total,
     question: aq.question,
     time_remaining_ms: deadline !== null ? Math.max(0, deadline - Date.now()) : null,
+    draft: draft
+      ? {
+          text: draft.text,
+          snippet_code: draft.snippet_code,
+          snippet_language: isSnippetLanguage(draft.snippet_language)
+            ? draft.snippet_language
+            : null,
+          saved_at: draft.saved_at.toISOString(),
+        }
+      : null,
   };
+}
+
+// ── PUT /sessions/:id/questions/:questionId/draft ────────────────────────────
+/**
+ * Save work in progress. Called on a debounce while typing, on blur, and before
+ * leaving a question.
+ *
+ * Deliberately forgiving: it accepts writes inside the expiry grace window, it
+ * never advances anything, and it is the one candidate write that is allowed to
+ * be slightly late — the autosave racing the clock is exactly what the grace
+ * exists for.
+ */
+export async function saveDraft(
+  sessionId: string,
+  questionId: string,
+  body: SaveDraftRequest,
+): Promise<SaveDraftResponse> {
+  const s = await loadSessionWithAssessment(sessionId);
+  const lateBy = await ensureActive(s, { graceAllowed: true });
+
+  const aq = s.assessment.questions.find((q) => q.question.id === questionId);
+  if (!aq) throw new AppError(400, 'QUESTION_MISMATCH', 'That question is not in this assessment');
+
+  // Already answered: the draft has served its purpose and must not resurrect
+  // as a competing version of a question that is closed.
+  const existing = await prisma.answer.findUnique({
+    where: { session_id_question_id: { session_id: sessionId, question_id: questionId } },
+    select: { id: true },
+  });
+  if (existing) throw new AppError(409, 'ALREADY_ANSWERED', 'This question has been answered');
+
+  const snippet = normalizeSnippet(body.snippet_code, body.snippet_language);
+  const data = {
+    text: body.text,
+    snippet_code: snippet.code,
+    snippet_language: snippet.language,
+    position: aq.position,
+  };
+  const draft = await prisma.answerDraft.upsert({
+    where: { session_id_question_id: { session_id: sessionId, question_id: questionId } },
+    create: { session_id: sessionId, question_id: questionId, ...data },
+    update: data,
+  });
+
+  // Recorded rather than hidden: the report is entitled to say a write landed
+  // after the bell. It is expected mechanics, not a flag, and the report frames
+  // it that way.
+  if (lateBy !== null) {
+    await prisma.behaviorEvent.create({
+      data: {
+        session_id: sessionId,
+        type: 'late_write',
+        timestamp: BigInt(Date.now()),
+        question_index: aq.position,
+        idle_duration_ms: Math.round(lateBy),
+      },
+    });
+  }
+
+  return { saved_at: draft.saved_at.toISOString(), late_by_ms: lateBy };
 }
 
 // ── POST /sessions/:id/answers ───────────────────────────────────────────────
@@ -216,7 +462,9 @@ export async function submitAnswer(
   body: SubmitAnswerRequest,
 ): Promise<SubmitAnswerResponse> {
   const s = await loadSessionWithAssessment(sessionId);
-  await ensureActive(s);
+  // The submit that rides on the last autosave gets the same grace the autosave
+  // does — otherwise the two disagree about whether the answer exists.
+  const lateBy = await ensureActive(s, { graceAllowed: true });
 
   const total = s.assessment.questions.length;
   const answered = s._count.answers;
@@ -263,6 +511,24 @@ export async function submitAnswer(
       paste_char_count: paste.maxChars,
     },
   });
+
+  // The draft is spent: the answer is the record now, and leaving the draft
+  // would let expiry promote a second version of a question already answered.
+  await prisma.answerDraft.deleteMany({
+    where: { session_id: sessionId, question_id: body.question_id },
+  });
+
+  if (lateBy !== null) {
+    await prisma.behaviorEvent.create({
+      data: {
+        session_id: sessionId,
+        type: 'late_write',
+        timestamp: BigInt(Date.now()),
+        question_index: body.position,
+        idle_duration_ms: Math.round(lateBy),
+      },
+    });
+  }
 
   let probe = null;
   if (probeIsDue(mode, paste.detected)) {
@@ -331,11 +597,15 @@ export async function recordEvents(
 export async function submitSession(sessionId: string): Promise<SubmitSessionResponse> {
   const s = await prisma.session.findUnique({
     where: { id: sessionId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, is_preview: true },
   });
   if (!s) throw new AppError(404, 'SESSION_NOT_FOUND', 'Session not found');
 
   if (s.status !== 'submitted' && s.status !== 'expired') {
+    // Anything typed and not submitted becomes an answer. In the normal flow
+    // there is nothing here — answering a question deletes its draft — so this
+    // only ever catches the question that was open when the clock ran out.
+    await promoteDraftsToAnswers(sessionId);
     await prisma.session.update({
       where: { id: sessionId },
       data: { status: 'submitted', submitted_at: new Date() },
@@ -345,6 +615,15 @@ export async function submitSession(sessionId: string): Promise<SubmitSessionRes
   // whether there is a defense to score, and `generated` means "still on
   // screen", which nothing is once the session is submitted.
   await finalizeOpenProbes(sessionId);
+
+  // THE ONE PLACE A PREVIEW DIVERGES. Everything above this line happened
+  // exactly as it would for a candidate — that is what makes it a preview —
+  // but a manager walking their own assessment must not produce a score, a
+  // report, or a row anyone could mistake for a real result.
+  if (s.is_preview) {
+    return { ok: true, message: 'Preview finished. Nothing was recorded.' };
+  }
+
   await enqueueScoring(sessionId);
   return { ok: true, message: 'Your assessment has been submitted. Thank you.' };
 }
